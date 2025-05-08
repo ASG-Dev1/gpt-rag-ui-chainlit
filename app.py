@@ -80,14 +80,58 @@ if ENABLE_AUTHENTICATION:
 # Chainlit event handlers
 @cl.on_chat_start
 async def on_chat_start():
-    pass
+    # pass
+    auth_info = check_authorization()
+    user_id = auth_info.get("client_principal_id", "unknown")
+
+    history = await get_user_history_from_cosmos(user_id)
+
+    if history:
+        await cl.Message(
+            content=f"Welcome back! You have {len(history)} previous chat(s).",
+            actions=[cl.Action(name="show_history", value="show_history", label="Show Chat History")]
+        ).send()
+    else:
+        # await cl.Message(content="Welcome! Ask me anything.").send()
+        await cl.Message(content="Welcome! Ask me anything or type `/history` to see your last chats.").send()
     # app_user = cl.user_session.get("user")
     # if app_user:
         # await cl.Message(content=f"Hello {app_user.metadata.get('user_name')}").send()
 
+# @cl.on_action
+# async def handle_action(action: cl.Action):
+#     if action.value == "show_history":
+#         auth_info = check_authorization()
+#         user_id = auth_info.get("client_principal_id", "unknown")
 
+#         history = await get_user_history_from_cosmos(user_id)
+
+#         if not history:
+#             await cl.Message(content="No history found.").send()
+#             return
+
+#         for h in history[:5]:  # Limit to latest 5
+#             question = h.get("question", "No question recorded.")
+#             answer = h.get("response", "No response recorded.")
+#             await cl.Message(content=f"**Q:** {question}\n**A:** {answer}").send()
+            
 @cl.on_message
 async def handle_message(message: cl.Message):
+    if message.content.strip().lower() == "/history":
+        auth_info = check_authorization()
+        user_id = auth_info.get("client_principal_id", "unknown")
+        history = await get_user_history_from_cosmos(user_id)
+
+        if not history:
+            await cl.Message(content="No chat history found.").send()
+            return
+
+        for h in history[:5]:  # Show last 5
+            question = h.get("question", "No question recorded.")
+            answer = h.get("response", "No response recorded.")
+            await cl.Message(content=f"**Q:** {question}\n**A:** {answer}").send()
+        return
+    
     message.id = message.id or str(uuid.uuid4())
     conversation_id = cl.user_session.get("conversation_id") or ""
     response_msg = cl.Message(content="")

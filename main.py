@@ -1,9 +1,12 @@
 import logging
 import os
+
 from io import BytesIO
 
 from fastapi import Response
 from fastapi.responses import StreamingResponse
+import app
+
 from chainlit.server import app as chainlit_app
 
 from connectors import BlobClient

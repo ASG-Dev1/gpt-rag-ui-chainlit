@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-chainlit==2.4.0
+chainlit>=0.7.401
 httpx
 msal
 python-dotenv
