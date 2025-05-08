@@ -1,6 +1,6 @@
 .watermark {
-    display: none !important;
-  }
+  display: none !important;
+}
 
 #readme-button {
   display: none;
@@ -15,5 +15,20 @@ img[src*="favicon"] {
 
 /* Hide right empty pane in the login page */
 div.relative.hidden.bg-muted.lg\:block {
+  display: none !important;
+}
+
+
+.message-bubble {
+  background-color: transparent !important;
+  box-shadow: none !important;
+  padding: 8px !important;
+}
+
+.message-wrapper {
+  border: none !important;
+}
+
+.message-author {
   display: none !important;
 }

@@ -7,6 +7,7 @@ from typing import Optional, Tuple
 
 import chainlit as cl
 
+from util.cosmos_history import get_user_history_from_cosmos
 from orchestrator_client import call_orchestrator_stream
 
 # Constants
@@ -80,6 +81,8 @@ if ENABLE_AUTHENTICATION:
 # Chainlit event handlers
 @cl.on_chat_start
 async def on_chat_start():
+    conversation_id = str(uuid.uuid4()) #This ensures every session has its own conversation_id.
+    cl.user_session.set("conversation_id", conversation_id) #This ensures every session has its own conversation_id.
     # pass
     auth_info = check_authorization()
     user_id = auth_info.get("client_principal_id", "unknown")
@@ -88,8 +91,8 @@ async def on_chat_start():
 
     if history:
         await cl.Message(
-            content=f"Welcome back! You have {len(history)} previous chat(s).",
-            actions=[cl.Action(name="show_history", value="show_history", label="Show Chat History")]
+            content="Welcome!",
+            actions=[cl.Action(name="show_history", label="Show History", value="history_toggle")]
         ).send()
     else:
         # await cl.Message(content="Welcome! Ask me anything.").send()
@@ -100,7 +103,7 @@ async def on_chat_start():
 
 # @cl.on_action
 # async def handle_action(action: cl.Action):
-#     if action.value == "show_history":
+#     if action.value == "history_toggle":
 #         auth_info = check_authorization()
 #         user_id = auth_info.get("client_principal_id", "unknown")
 
@@ -110,28 +113,41 @@ async def on_chat_start():
 #             await cl.Message(content="No history found.").send()
 #             return
 
-#         for h in history[:5]:  # Limit to latest 5
+#         for h in history[:5]:
 #             question = h.get("question", "No question recorded.")
 #             answer = h.get("response", "No response recorded.")
 #             await cl.Message(content=f"**Q:** {question}\n**A:** {answer}").send()
             
+# @cl.on_message
+# async def handle_message(message: cl.Message):
+#     if message.content.strip().lower() == "/history":
+#         auth_info = check_authorization()
+#         user_id = auth_info.get("client_principal_id", "unknown")
+#         history = await get_user_history_from_cosmos(user_id)
+
+#         if not history:
+#             await cl.Message(content="No chat history found.").send()
+#             return
+
+#         for h in history[:5]:  # Show last 5
+#             question = h.get("question", "No question recorded.")
+#             answer = h.get("response", "No response recorded.")
+#             await cl.Message(content=f"**Q:** {question}\n**A:** {answer}").send()
+#         return
 @cl.on_message
 async def handle_message(message: cl.Message):
     if message.content.strip().lower() == "/history":
-        auth_info = check_authorization()
-        user_id = auth_info.get("client_principal_id", "unknown")
-        history = await get_user_history_from_cosmos(user_id)
+        message_list = cl.user_session.get("message_list", [])
 
-        if not history:
+        if not message_list:
             await cl.Message(content="No chat history found.").send()
             return
 
-        for h in history[:5]:  # Show last 5
-            question = h.get("question", "No question recorded.")
-            answer = h.get("response", "No response recorded.")
+        for entry in message_list[-5:]:
+            question = entry.get("question", "No question recorded.")
+            answer = entry.get("answer", "No response recorded.")
             await cl.Message(content=f"**Q:** {question}\n**A:** {answer}").send()
         return
-    
     message.id = message.id or str(uuid.uuid4())
     conversation_id = cl.user_session.get("conversation_id") or ""
     response_msg = cl.Message(content="")
@@ -206,7 +222,16 @@ async def handle_message(message: cl.Message):
 
     cl.user_session.set("conversation_id", conversation_id)
     await response_msg.update()
+    # Save question-answer to message list
+    if not cl.user_session.get("message_list"):
+        cl.user_session.set("message_list", [])
 
+    message_list = cl.user_session.get("message_list")
+    message_list.append({
+        "question": message.content,
+        "answer": full_text
+    })
+    cl.user_session.set("message_list", message_list)
     # Final reference handling and update
     # references.update(REFERENCE_REGEX.findall(full_text))
     # final_text = replace_source_reference_links(full_text.replace(TERMINATE_TOKEN, ""))
