@@ -31,7 +31,9 @@ async def get_user_groups(access_token: str) -> List[str]:
             response = await client.get(graph_url, headers=headers)
             response.raise_for_status()
             group_data = response.json()
-        groups = [g.get("displayName", "unknown-group") for g in group_data.get("value", [])]
+        groups = [
+            g.get("displayName", "unknown-group") for g in group_data.get("value", [])
+        ]
         logging.info(f"[auth] User groups: {groups}")
         return groups
     except Exception as e:
@@ -54,14 +56,16 @@ def is_user_authorized(name: str, principal_id: str, groups: List[str]) -> bool:
     if any(group in allowed_groups for group in groups):
         return True
 
-    logging.info(f"[auth] Access denied for user {name}. Not in allowed users or groups.")
+    logging.info(
+        f"[auth] Access denied for user {name}. Not in allowed users or groups."
+    )
     return False
 
 
 @cl.oauth_callback
 async def oauth_callback(
-    provider_id: str, code: str, raw_user_data: Dict[str, str], default_user: cl.User
-) -> cl.User:
+    provider_id: str, code: str, raw_user_data: Dict[str, str], default_user
+):
     """Handles the OAuth callback and returns a validated Chainlit User."""
     client_id = get_env_var("OAUTH_AZURE_AD_CLIENT_ID", get_env_var("CLIENT_ID"))
     client_secret = get_env_var("OAUTH_AZURE_AD_CLIENT_SECRET")
@@ -71,14 +75,11 @@ async def oauth_callback(
 
     # Build MSAL confidential client
     msal_app = msal.ConfidentialClientApplication(
-        client_id,
-        authority=authority,
-        client_credential=client_secret
+        client_id, authority=authority, client_credential=client_secret
     )
 
     result = msal_app.acquire_token_by_refresh_token(
-        refresh_token=default_user.metadata.get("refresh_token"),
-        scopes=scopes
+        refresh_token=default_user.metadata.get("refresh_token"), scopes=scopes
     )
 
     if "error" in result:
@@ -97,15 +98,15 @@ async def oauth_callback(
     groups = await get_user_groups(access_token) if access_token else []
     authorized = is_user_authorized(principal_name, user_id, groups)
 
-    return cl.User(
-        identifier=user_name,
-        metadata={
+    default_user.metadata.update(
+        {
             "access_token": access_token,
             "refresh_token": refresh_token,
             "authorized": authorized,
             "user_name": user_name,
             "client_principal_id": user_id,
             "client_principal_name": principal_name,
-            "client_group_names": groups
+            "client_group_names": groups,
         }
     )
+    return default_user
