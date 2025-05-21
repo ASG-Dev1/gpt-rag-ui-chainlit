@@ -4,7 +4,7 @@ connection_string = "${COSMOS_DB_CONNECTION_STRING}"
 
 [auth]
 enabled = true
-secret_key = ":nj2WvGvc1HKLwVV~UI+Y1XOMME/T>DcJ:V-8HY>pvILllYoG5u-nj$@YJS.yzGD"
+secret_key = "${CHAINLIT_AUTH_SECRET}"
 
 [project]
 # Whether to enable telemetry (default: true). No personal data is collected.
