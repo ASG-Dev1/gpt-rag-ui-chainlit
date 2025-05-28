@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 my_secret = os.getenv("CHAINLIT_AUTH_SECRET")
 print("CHAINLIT_AUTH_SECRET:", my_secret)
 my_auth = os.getenv("CHAINLIT_AUTH")
@@ -104,6 +105,7 @@ def check_authorization() -> dict:
     }
 
 
+# Defines a list of available chat profiles (e.g, different assistant personas)
 @cl.set_chat_profiles
 async def chat_profiles():
     return [
@@ -116,6 +118,7 @@ async def chat_profiles():
     ]
 
 
+# Defines a callback for password-based authentication
 @cl.password_auth_callback
 def login(username: str, password: str):
     class SimpleUser:
@@ -137,17 +140,47 @@ def login(username: str, password: str):
 
 
 # 🔁 Sidebar update helper
+# async def update_sidebar():
+#     user = cl.user_session.get("user")
+#     user_id = user.metadata.get("client_principal_id") if user else "no-auth"
+#     history = await get_user_history_from_cosmos(user_id)
+#     elements = []
+
+#     for convo in history:
+#         convo_id = convo["id"]
+#         summary = convo.get("summary") or convo.get("messages", [{}])[0].get(
+#             "content", convo_id[:40]
+#         )
+
+#         elements.append(
+#             cl.Text(
+#                 content=summary,
+#                 name=f"convo_{convo_id}",
+#                 display="side",
+#                 actions=[
+#                     cl.Action(
+#                         name="resume_convo",
+#                         label="▶ Resume Conversation",
+#                         payload={"value": convo_id},
+#                     )
+#                 ],
+#             )
+#         )
+
+
+#     await ElementSidebar.set_title("Conversation Histories")
+#     await ElementSidebar.set_elements(elements)
 async def update_sidebar():
     user = cl.user_session.get("user")
     user_id = user.metadata.get("client_principal_id") if user else "no-auth"
-
     history = await get_user_history_from_cosmos(user_id)
+
     elements = []
 
     for convo in history:
         convo_id = convo["id"]
         summary = convo.get("summary") or convo.get("messages", [{}])[0].get(
-            "content", convo_id[:8]
+            "content", convo_id[:40]
         )
 
         elements.append(
@@ -165,36 +198,47 @@ async def update_sidebar():
             )
         )
 
-    await ElementSidebar.set_title("🧾 Past Conversations")
+    await ElementSidebar.set_title("💬 Conversation History")
     await ElementSidebar.set_elements(elements)
 
 
-# 🧠 Start of chat - calls the sidebar updater
+#  Start of chat - calls the sidebar updater
 @cl.on_chat_start
 async def on_chat_start():
     cl.user_session.set("conversation_id", str(uuid.uuid4()))
     await update_sidebar()
     await cl.Message(
-        content="👋 Welcome! Choose a conversation or start a new one."
+        content="👋 Welcome to ASGPT 2.0! Choose a conversation or start a new one."
     ).send()
+
+
+# Starters appear below chat message box
+# @cl.set_starters
+# async def set_starters():
+#     return [
+#         cl.Starter(
+#             label="Fix Grammer",
+#             message="Review and fix grammatical errors",
+#             icon="/public/favicon.ico",
+#         )
+#     ]
 
 
 @cl.action_callback("resume_convo")
 async def on_resume_convo(action: cl.Action):
-    # convo_id = action.value
+    print(f"💥 CLICKED: {action.payload}")  # Add this to verify click
     convo_id = action.payload["value"]
     cl.user_session.set("conversation_id", convo_id)
+
     await cl.Message(content=f"🔄 Resuming conversation {convo_id}").send()
 
     messages = await get_user_messages(convo_id)
-    # for msg in messages:
-    #     await cl.Message(content=msg["content"], author=msg["speaker"]).send()
-    # This works better with the cl.on_message section
     for msg in messages:
         content = msg["content"].replace("\\n", "\n").replace("TERMINATE", "").strip()
         await cl.Message(content=content, author=msg["speaker"]).send()
 
 
+# Resume a previous chat session, restore conversation context
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
     # 1) Update session’s conversation_id
@@ -205,8 +249,18 @@ async def on_chat_resume(thread: ThreadDict):
     await cl.Message(content=f"🔄 Resuming conversation {thread['id']}").send()
 
 
+# Message sends and generates and sends a response
 @cl.on_message
 async def handle_message(message: cl.Message):
+    # 🔁 TEMP DEBUG: manual resume command
+    if message.content.startswith("/go "):
+        convo_id = message.content.split("/go ")[1].strip()
+        print(f"💥 Manually resuming: {convo_id}")
+        await on_resume_convo(
+            cl.Action(name="resume_convo", payload={"value": convo_id})
+        )
+        return
+
     if message.content.strip().lower() == "/history":
         message_list = cl.user_session.get("message_list", [])
         if not message_list:
@@ -297,12 +351,12 @@ async def handle_message(message: cl.Message):
             pass
 
     cl.user_session.set("conversation_id", conversation_id)
-
+    await update_sidebar()
     # Strip TERMINATE before saving
     full_text = full_text.replace(TERMINATE_TOKEN, "").strip()
 
     message_list = cl.user_session.get("message_list") or []
     message_list.append({"question": message.content, "answer": full_text})
     cl.user_session.set("message_list", message_list)
-
+    logging.info(f"[response message is]:", response_msg)
     await response_msg.update()

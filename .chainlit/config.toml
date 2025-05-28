@@ -64,7 +64,7 @@ enabled = true
 
 [UI]
 # Name of the assistant.
-name = "GPT-RAG"
+name = "ASGPT 2.0"
 
 # default_theme = "dark"
 default_theme = "light"
