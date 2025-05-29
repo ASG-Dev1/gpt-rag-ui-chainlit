@@ -32,10 +32,10 @@ async def get_user_history_from_cosmos(user_id: str):
             items = container.query_items(query=query, parameters=params)
 
             results = [item async for item in items]
-            logging.info(f"[cosmos] Fetched {len(results)} convos for {user_id}")
-            logging.info(
-                f"[cosmos] First history item: {json.dumps(results[0], indent=2)}"
-            )
+            # logging.info(f"[cosmos] Fetched {len(results)} convos for {user_id}")
+            # logging.info(
+            #     f"[cosmos] First history item: {json.dumps(results[0], indent=2)}"
+            # )
             return results
 
     except exceptions.CosmosHttpResponseError as e:

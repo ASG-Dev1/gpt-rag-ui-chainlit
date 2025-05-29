@@ -110,11 +110,29 @@ def check_authorization() -> dict:
 async def chat_profiles():
     return [
         cl.ChatProfile(
+            name="ASGPT",
+            icon="favicon",
+            id="rag",
+            markdown_description="Main assistant profile for ASGPT answers",
+        ),
+        cl.ChatProfile(
+            name="ASGPT 2.0",
+            icon="🧠",
+            id="rag",
+            markdown_description="Main assistant profile for ASGPT 2.0 answers",
+        ),
+        cl.ChatProfile(
             name="GPT-RAG",
             icon="🧠",
             id="rag",
-            markdown_description="Main assistant profile for RAG answers",
-        )
+            markdown_description="Main assistant profile for GPT-RAG answers",
+        ),
+        cl.ChatProfile(
+            name="Legal GPT",
+            icon="🧠",
+            id="rag",
+            markdown_description="Main assistant profile for Legal GPT answers",
+        ),
     ]
 
 
@@ -139,95 +157,62 @@ def login(username: str, password: str):
     return None
 
 
-# 🔁 Sidebar update helper
 # async def update_sidebar():
 #     user = cl.user_session.get("user")
 #     user_id = user.metadata.get("client_principal_id") if user else "no-auth"
 #     history = await get_user_history_from_cosmos(user_id)
+
 #     elements = []
 
 #     for convo in history:
 #         convo_id = convo["id"]
-#         summary = convo.get("summary") or convo.get("messages", [{}])[0].get(
-#             "content", convo_id[:40]
+#         summary = convo.get("summary") or convo.get("message", [{}])[0].get(
+#             "content", convo_id[:30]
 #         )
 
 #         elements.append(
 #             cl.Text(
-#                 content=summary,
-#                 name=f"convo_{convo_id}",
+#                 name=f"/resume {convo_id}",  # Will be posted as a message when clicked
+#                 content=f"[**▶ {summary}**](#)",
 #                 display="side",
-#                 actions=[
-#                     cl.Action(
-#                         name="resume_convo",
-#                         label="▶ Resume Conversation",
-#                         payload={"value": convo_id},
-#                     )
-#                 ],
 #             )
 #         )
 
-
-#     await ElementSidebar.set_title("Conversation Histories")
-#     await ElementSidebar.set_elements(elements)
-async def update_sidebar():
-    user = cl.user_session.get("user")
-    user_id = user.metadata.get("client_principal_id") if user else "no-auth"
-    history = await get_user_history_from_cosmos(user_id)
-
-    elements = []
-
-    for convo in history:
-        convo_id = convo["id"]
-        summary = convo.get("summary") or convo.get("messages", [{}])[0].get(
-            "content", convo_id[:40]
-        )
-
-        elements.append(
-            cl.Text(
-                content=summary,
-                name=f"convo_{convo_id}",
-                display="side",
-                actions=[
-                    cl.Action(
-                        name="resume_convo",
-                        label="▶ Resume",
-                        payload={"value": convo_id},
-                    )
-                ],
-            )
-        )
-
-    await ElementSidebar.set_title("💬 Conversation History")
-    await ElementSidebar.set_elements(elements)
+#     await cl.ElementSidebar.set_title("💬 Conversation History")
+#     await cl.ElementSidebar.set_elements(elements)
 
 
-#  Start of chat - calls the sidebar updater
+# THIS REGISTERS HISTORY IN THE CHAT WITH BUTTONS (NO SIDEBAR)
 @cl.on_chat_start
 async def on_chat_start():
     cl.user_session.set("conversation_id", str(uuid.uuid4()))
-    await update_sidebar()
+    # await update_sidebar()  # Show sidebar
+
+    # user = cl.user_session.get("user")
+    # user_id = user.metadata.get("client_principal_id") if user else "no-auth"
+    # history = await get_user_history_from_cosmos(user_id)
+
+    # # Build interactive buttons
+    # buttons = [
+    #     cl.Action(
+    #         name="resume_convo",
+    #         label=f"▶ {convo.get('summary') or convo.get('history', [{}])[0].get('content', convo['id'][:30])}",
+    #         payload={"value": convo["id"]},
+    #     )
+    #     for convo in history
+    # ]
+
+    # # Show welcome message and action buttons in chat
     await cl.Message(
-        content="👋 Welcome to ASGPT 2.0! Choose a conversation or start a new one."
+        content="👋 Welcome to ASGPT 2.0! Select a past conversation to resume:",
+        #     actions=buttons,
     ).send()
-
-
-# Starters appear below chat message box
-# @cl.set_starters
-# async def set_starters():
-#     return [
-#         cl.Starter(
-#             label="Fix Grammer",
-#             message="Review and fix grammatical errors",
-#             icon="/public/favicon.ico",
-#         )
-#     ]
 
 
 @cl.action_callback("resume_convo")
 async def on_resume_convo(action: cl.Action):
-    print(f"💥 CLICKED: {action.payload}")  # Add this to verify click
     convo_id = action.payload["value"]
+    print(f"💥 CLICKED: {convo_id}")
     cl.user_session.set("conversation_id", convo_id)
 
     await cl.Message(content=f"🔄 Resuming conversation {convo_id}").send()
@@ -246,30 +231,21 @@ async def on_chat_resume(thread: ThreadDict):
 
     # 2) Optionally rehydrate any in-memory state or agents,
 
-    await cl.Message(content=f"🔄 Resuming conversation {thread['id']}").send()
+    # await cl.Message(content=f"🔄 Resuming conversation {thread['id']}").send()
 
 
 # Message sends and generates and sends a response
+
+
 @cl.on_message
 async def handle_message(message: cl.Message):
-    # 🔁 TEMP DEBUG: manual resume command
-    if message.content.startswith("/go "):
-        convo_id = message.content.split("/go ")[1].strip()
+    # GET A CONVERSATION FROM HISTORY TO SEE OR RESUME (JUST TYPE IN CHATBOX e.g,:/history 9a3ad319-2d1b-401a-999b-bad608399cf7)
+    if message.content.startswith("/history "):
+        convo_id = message.content.split("/history ")[1].strip()
         print(f"💥 Manually resuming: {convo_id}")
         await on_resume_convo(
             cl.Action(name="resume_convo", payload={"value": convo_id})
         )
-        return
-
-    if message.content.strip().lower() == "/history":
-        message_list = cl.user_session.get("message_list", [])
-        if not message_list:
-            await cl.Message(content="No chat history found.").send()
-            return
-        for entry in message_list[-5:]:
-            question = entry.get("question", "No question recorded.")
-            answer = entry.get("answer", "No response recorded.")
-            await cl.Message(content=f"**Q:** {question}\n**A:** {answer}").send()
         return
 
     message.id = message.id or str(uuid.uuid4())
@@ -351,7 +327,7 @@ async def handle_message(message: cl.Message):
             pass
 
     cl.user_session.set("conversation_id", conversation_id)
-    await update_sidebar()
+    # await update_sidebar()
     # Strip TERMINATE before saving
     full_text = full_text.replace(TERMINATE_TOKEN, "").strip()
 
