@@ -157,50 +157,50 @@ def login(username: str, password: str):
     return None
 
 
-# async def update_sidebar():
-#     user = cl.user_session.get("user")
-#     user_id = user.metadata.get("client_principal_id") if user else "no-auth"
-#     history = await get_user_history_from_cosmos(user_id)
+async def update_sidebar():
+    user = cl.user_session.get("user")
+    user_id = user.metadata.get("client_principal_id") if user else "no-auth"
+    history = await get_user_history_from_cosmos(user_id)
 
-#     elements = []
+    elements = []
 
-#     for convo in history:
-#         convo_id = convo["id"]
-#         summary = convo.get("summary") or convo.get("message", [{}])[0].get(
-#             "content", convo_id[:30]
-#         )
+    for convo in history:
+        convo_id = convo["id"]
+        summary = convo.get("summary") or convo.get("message", [{}])[0].get(
+            "content", convo_id[:30]
+        )
 
-#         elements.append(
-#             cl.Text(
-#                 name=f"/resume {convo_id}",  # Will be posted as a message when clicked
-#                 content=f"[**▶ {summary}**](#)",
-#                 display="side",
-#             )
-#         )
+        elements.append(
+            cl.Text(
+                name=f"/resume {convo_id}",  # Will be posted as a message when clicked
+                content=f"[**▶ {summary}**](#)",
+                display="side",
+            )
+        )
 
-#     await cl.ElementSidebar.set_title("💬 Conversation History")
-#     await cl.ElementSidebar.set_elements(elements)
+    await cl.ElementSidebar.set_title("💬 Conversation History")
+    await cl.ElementSidebar.set_elements(elements)
 
 
 # THIS REGISTERS HISTORY IN THE CHAT WITH BUTTONS (NO SIDEBAR)
 @cl.on_chat_start
 async def on_chat_start():
     cl.user_session.set("conversation_id", str(uuid.uuid4()))
-    # await update_sidebar()  # Show sidebar
+    await update_sidebar()  # Show sidebar
 
-    # user = cl.user_session.get("user")
-    # user_id = user.metadata.get("client_principal_id") if user else "no-auth"
-    # history = await get_user_history_from_cosmos(user_id)
+    user = cl.user_session.get("user")
+    user_id = user.metadata.get("client_principal_id") if user else "no-auth"
+    history = await get_user_history_from_cosmos(user_id)
 
-    # # Build interactive buttons
-    # buttons = [
-    #     cl.Action(
-    #         name="resume_convo",
-    #         label=f"▶ {convo.get('summary') or convo.get('history', [{}])[0].get('content', convo['id'][:30])}",
-    #         payload={"value": convo["id"]},
-    #     )
-    #     for convo in history
-    # ]
+    # Build interactive buttons
+    buttons = [
+        cl.Action(
+            name="resume_convo",
+            label=f"▶ {convo.get('summary') or convo.get('history', [{}])[0].get('content', convo['id'][:30])}",
+            payload={"value": convo["id"]},
+        )
+        for convo in history
+    ]
 
     # # Show welcome message and action buttons in chat
     await cl.Message(
