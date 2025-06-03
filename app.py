@@ -12,7 +12,6 @@ from chainlit import Action
 from chainlit.types import ThreadDict
 from chainlit import Text, ElementSidebar
 
-from util.cosmos_history import get_user_history_from_cosmos, get_user_messages
 from orchestrator_client import call_orchestrator_stream
 from cosmos_layer import CosmosDataLayer
 from dotenv import load_dotenv
@@ -168,55 +167,13 @@ def login(username: str, password: str):
     return None
 
 
-async def update_sidebar():
-    user = cl.user_session.get("user")
-    user_id = user.metadata.get("client_principal_id") if user else "no-auth"
-    history = await get_user_history_from_cosmos(user_id)
-
-    elements = []
-
-    for convo in history:
-        convo_id = convo["id"]
-        summary = convo.get("summary") or convo.get("message", [{}])[0].get(
-            "content", convo_id[:30]
-        )
-
-        elements.append(
-            cl.Text(
-                name=f"/resume {convo_id}",  # Will be posted as a message when clicked
-                content=f"[**▶ {summary}**](#)",
-                display="side",
-            )
-        )
-
-    await cl.ElementSidebar.set_title("💬 Conversation History")
-    await cl.ElementSidebar.set_elements(elements)
-
-
-# THIS REGISTERS HISTORY IN THE CHAT WITH BUTTONS (NO SIDEBAR)
 @cl.on_chat_start
 async def on_chat_start():
     cl.user_session.set("conversation_id", str(uuid.uuid4()))
-    await update_sidebar()  # Show sidebar
 
-    user = cl.user_session.get("user")
-    user_id = user.metadata.get("client_principal_id") if user else "no-auth"
-    history = await get_user_history_from_cosmos(user_id)
-
-    # Build interactive buttons
-    buttons = [
-        cl.Action(
-            name="resume_convo",
-            label=f"▶ {convo.get('summary') or convo.get('history', [{}])[0].get('content', convo['id'][:30])}",
-            payload={"value": convo["id"]},
-        )
-        for convo in history
-    ]
-
-    # # Show welcome message and action buttons in chat
+    # Show welcome message and action buttons in chat
     await cl.Message(
         content="👋 Welcome to ASGPT 2.0! Select a past conversation to resume:",
-        #     actions=buttons,
     ).send()
 
 
@@ -228,37 +185,15 @@ async def on_resume_convo(action: cl.Action):
 
     await cl.Message(content=f"🔄 Resuming conversation {convo_id}").send()
 
-    messages = await get_user_messages(convo_id)
-    for msg in messages:
-        content = msg["content"].replace("\\n", "\n").replace("TERMINATE", "").strip()
-        await cl.Message(content=content, author=msg["speaker"]).send()
-
 
 # Resume a previous chat session, restore conversation context
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
-    # 1) Update session’s conversation_id
     cl.user_session.set("conversation_id", thread["id"])
-
-    # 2) Optionally rehydrate any in-memory state or agents,
-
-    # await cl.Message(content=f"🔄 Resuming conversation {thread['id']}").send()
-
-
-# Message sends and generates and sends a response
 
 
 @cl.on_message
 async def handle_message(message: cl.Message):
-    # GET A CONVERSATION FROM HISTORY TO SEE OR RESUME (JUST TYPE IN CHATBOX e.g,:/history 9a3ad319-2d1b-401a-999b-bad608399cf7)
-    if message.content.startswith("/history "):
-        convo_id = message.content.split("/history ")[1].strip()
-        print(f"💥 Manually resuming: {convo_id}")
-        await on_resume_convo(
-            cl.Action(name="resume_convo", payload={"value": convo_id})
-        )
-        return
-
     message.id = message.id or str(uuid.uuid4())
     conversation_id = cl.user_session.get("conversation_id") or ""
     response_msg = cl.Message(content="")
