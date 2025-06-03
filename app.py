@@ -14,7 +14,7 @@ from chainlit import Text, ElementSidebar
 
 from util.cosmos_history import get_user_history_from_cosmos, get_user_messages
 from orchestrator_client import call_orchestrator_stream
-
+from cosmos_layer import CosmosDataLayer
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -57,6 +57,17 @@ REFERENCE_REGEX = re.compile(
 )
 
 TERMINATE_TOKEN = "TERMINATE"
+
+
+# cl.data_layer = CosmosDataLayer()
+@cl.data_layer
+def get_data_layer():
+    return CosmosDataLayer(
+        endpoint=os.getenv("COSMOS_DB_URI") or cl.config.cosmosdb.uri,
+        key=os.getenv("COSMOS_DB_KEY") or cl.config.cosmosdb.key,
+        database_name=os.getenv("AZURE_DB_ID", "db0-wvvannyqg5e74"),
+        container_threads=os.getenv("AZURE_CONTAINER_NAME", "conversations"),
+    )
 
 
 # Helpers
@@ -334,5 +345,5 @@ async def handle_message(message: cl.Message):
     message_list = cl.user_session.get("message_list") or []
     message_list.append({"question": message.content, "answer": full_text})
     cl.user_session.set("message_list", message_list)
-    logging.info(f"[response message is]:", response_msg)
+    logging.info(f"[response message is]: {response_msg}")
     await response_msg.update()

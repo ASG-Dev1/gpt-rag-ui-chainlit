@@ -1,158 +1,244 @@
-# cosmos_layer.py
-import os
+# ───────────────────────────────────────────────────────────────
+# data_layer/cosmos_data_layer.py  (FULL VERSION)
+# ───────────────────────────────────────────────────────────────
+"""
+Minimal but complete Cosmos DB NoSQL data layer for Chainlit ≥ 2.5.
+
+Implements every abstract hook with either real logic (threads/messages)
+or a stub that does nothing but satisfy the ABC.  Enough to unlock:
+  • conversation sidebar
+  • thread resume
+  • basic auth (create/get user)
+"""
+
+from __future__ import annotations  # Python <3.12 compatibility
+
 import uuid
-import datetime as dt
-from typing import List, Dict, Any, Optional
+import json
+import logging
+from typing import Any, Dict, List, Optional
 
 from azure.cosmos.aio import CosmosClient
-from azure.cosmos import PartitionKey, exceptions as cos_ex
+from azure.cosmos import PartitionKey, exceptions
+from azure.cosmos.exceptions import CosmosResourceNotFoundError, CosmosHttpResponseError
+from chainlit.types import PageInfo
+from chainlit import User
 
-from chainlit.data import BaseDataLayer, Pagination, PaginatedResponse, ThreadDict
+from chainlit.data.base import BaseDataLayer
+from chainlit.types import Pagination, PaginatedResponse
+
+# ---------------------------------------------------------------------------
+# Helper constants
+# ---------------------------------------------------------------------------
+
+_DB_NAME = "db0-wvvannyqg5e74"
+_CONTAINER_THREADS = "conversations"
+_CONTAINER_USERS = "users"
 
 
-class CosmosLayer(BaseDataLayer):
-    """
-    Data-layer para Chainlit que persiste hilos y mensajes en
-    Azure Cosmos DB (SQL API). Compatible con el sidebar de historial.
-    """
+# ---------------------------------------------------------------------------
+# Main class
+# ---------------------------------------------------------------------------
 
-    # ---------- INIT ------------------------------------------------------
-    def __init__(self):
-        # 1️⃣ Conexión
-        conn_str = os.getenv("COSMOS_CONNECTION_STRING")
-        uri = os.getenv("COSMOS_DB_URI")
-        key = os.getenv("COSMOS_DB_KEY")
 
-        if conn_str:
-            self.client = CosmosClient.from_connection_string(conn_str)
-        elif uri and key:
-            self.client = CosmosClient(uri, credential=key)
-        else:
-            raise ValueError(
-                "❌ Cosmos creds missing. "
-                "Set COSMOS_CONNECTION_STRING or COSMOS_DB_URI + COSMOS_DB_KEY"
+class CosmosDataLayer(BaseDataLayer):
+    def __init__(
+        self,
+        endpoint: str,
+        key: str,
+        database_name: str = _DB_NAME,
+        container_threads: str = _CONTAINER_THREADS,
+        container_users: str = _CONTAINER_USERS,
+    ):
+        super().__init__()
+        self._client = CosmosClient(endpoint, credential=key)
+        self._db_name = database_name
+        self._threads_id = container_threads
+        self._users_id = container_users
+
+        # Lazily created containers
+        self._threads = None
+        self._users = None
+
+    # ── internal helpers ──────────────────────────────────────────────
+
+    async def _get_threads(self):
+        if not self._threads:
+            db = await self._client.create_database_if_not_exists(self._db_name)
+            self._threads = await db.create_container_if_not_exists(
+                id=self._threads_id,
+                partition_key=PartitionKey(path="/id"),
             )
+        return self._threads
 
-        # 2️⃣ DB y contenedor
-        db_name = os.getenv("COSMOS_DB_NAME", "ragdb")
-        ctr_name = os.getenv("COSMOS_CONTAINER", "conversations")
+    async def _get_users(self):
+        if not self._users:
+            db = await self._client.create_database_if_not_exists(self._db_name)
+            self._users = await db.create_container_if_not_exists(
+                id=self._users_id,
+                partition_key=PartitionKey(path="/id"),
+            )
+        return self._users
 
-        self.database = self.client.get_database_client(db_name)
-        self.container = self.database.get_container_client(ctr_name)
+    # ── threads & messages (the pieces the sidebar needs) ─────────────
 
-    # ---------- HELPERS ---------------------------------------------------
-    async def _upsert(self, doc: Dict[str, Any]) -> None:
-        """
-        Up-sert genérico, maneja partition key = conversation_id
-        """
-        await self.container.upsert_item(doc)
-
-    # ---------- THREADS ---------------------------------------------------
-    async def create_thread(self, thread: Dict[str, Any]) -> str:
-        """
-        Crea un nuevo hilo y devuelve su id.
-        Chainlit pasa algo así:
-        {
-            "id": "",  # puede venir vacío
-            "title": "Untitled",
-            "user_id": "sub|xyz",
-            ...
-        }
-        """
-        thread_id = thread.get("id") or str(uuid.uuid4())
-        doc = {
-            **thread,
-            "id": thread_id,
-            "conversation_id": thread_id,  # partition key
-            "type": "thread",
-            "created_at": dt.datetime.utcnow().isoformat(),
-        }
-        await self._upsert(doc)
+    async def create_thread(self, user_id: str) -> str:
+        cont = await self._get_threads()
+        thread_id = str(uuid.uuid4())
+        await cont.create_item(
+            {
+                "id": thread_id,
+                "user_id": user_id,
+                "messages": [],
+            }
+        )
         return thread_id
 
-    async def update_thread(self, thread_id: str, metadata: Dict[str, Any]) -> None:
-        """
-        Permite cambiar título o marcar como archivado.
-        """
+    async def list_threads(self, pagination, filters):
         try:
-            doc = await self.container.read_item(thread_id, partition_key=thread_id)
-            doc.update(metadata)
-            await self._upsert(doc)
-        except cos_ex.CosmosResourceNotFoundError:
-            pass  # silencioso; Chainlit lo ignora
+            container = await self._get_threads()
 
-    async def delete_thread(self, thread_id: str) -> None:
+            query = """
+            SELECT
+            c.id,
+            c.summary,
+            c.messages[0] AS preview
+            FROM c
+            WHERE c.user_id = @user_id
+            ORDER BY c._ts DESC
+            """
+            params = [{"name": "@user_id", "value": filters.userId}]
+            print("🔎 filters.userId =", filters.userId)
+            items = container.query_items(query=query, parameters=params)
+
+            results = [item async for item in items]
+
+            return PaginatedResponse(
+                data=results,
+                pageInfo=PageInfo(
+                    hasNextPage=False, startCursor=None, endCursor=None
+                ),  # or True, if the pagination supports more results
+            )
+
+        except exceptions.CosmosHttpResponseError as e:
+            import logging
+
+            logging.error(f"[cosmos_layer] Failed to fetch threads: {e}")
+            return []
+
+    async def get_thread(self, thread_id: str) -> Optional[Dict[str, Any]]:
+        cont = await self._get_threads()
         try:
-            await self.container.delete_item(thread_id, partition_key=thread_id)
-        except cos_ex.CosmosResourceNotFoundError:
-            pass
+            return await cont.read_item(item=thread_id, partition_key=thread_id)
+        except Exception:
+            logging.exception("Thread %s not found", thread_id)
+            return None
 
-    async def list_threads(self, user_id: str) -> List[Dict[str, Any]]:
+    async def append_message(self, thread_id: str, message: Dict[str, Any]):
+        cont = await self._get_threads()
+        item = await cont.read_item(thread_id, partition_key=thread_id)
+        item.setdefault("messages", []).append(message)
+        await cont.replace_item(item=item, body=item)
+
+    async def update_thread(self, thread_id: str, **kwargs):
+        # Called, e.g., when Chainlit stores a summary.
+        cont = await self._get_threads()
+        item = await cont.read_item(thread_id, partition_key=thread_id)
+        item.update(kwargs)
+        await cont.replace_item(item=item, body=item)
+
+    async def delete_thread(self, thread_id: str):
+        cont = await self._get_threads()
+        await cont.delete_item(thread_id, partition_key=thread_id)
+
+    async def get_thread_author(self, thread_id: str) -> Optional[str]:
+        thread = await self.get_thread(thread_id)
+        return thread.get("user_id") if thread else None
+
+    # ── user management (basic password-auth) ─────────────────────────
+
+    async def get_user(self, identifier: str) -> Optional[User]:
         """
-        Devuelve todos los hilos del usuario (solo metadatos).
+        Chainlit calls this to load a user by its identifier.
+        Since our container is partitioned on /id, we can just read_item by id.
         """
-        query = """
-        SELECT c.id, c.title, c.created_at
-        FROM c
-        WHERE c.type = 'thread' AND c.user_id = @uid
-        ORDER BY c.created_at DESC
-        """
-        items = self.container.query_items(
-            query=query,
-            parameters=[{"name": "@uid", "value": user_id}],
-            enable_cross_partition_query=True,
+        users_container = await self._get_users()
+        try:
+            user_doc = await users_container.read_item(
+                item=identifier, partition_key=identifier
+            )
+        except CosmosResourceNotFoundError:
+            return None
+
+        # Build a chainlit.User and then set `user.id = identifier`
+        u = User(
+            identifier=user_doc.get("identifier"),
+            name=user_doc.get("username", user_doc.get("identifier")),
+            email=user_doc.get("email"),
         )
-        return [i async for i in items]
+        # Attach the `id` attribute that Chainlit’s sidebar/resume logic needs:
+        u.id = identifier
+        return u
 
-    async def read_thread(self, thread_id: str) -> List[Dict[str, Any]]:
+    async def create_user(self, user: User) -> None:
         """
-        Devuelve todos los documentos (thread + messages) del hilo.
+        Chainlit calls this when a new user signs up (or first appears).
+        We should write the User data into Cosmos so that future get_user(...) can find it.
         """
-        query = """
-        SELECT * FROM c
-        WHERE c.conversation_id = @cid
-        ORDER BY c.timestamp ASC
-        """
-        items = self.container.query_items(
-            query=query,
-            parameters=[{"name": "@cid", "value": thread_id}],
-            partition_key=thread_id,
-        )
-        return [i async for i in items]
-
-    # ---------- MESSAGES --------------------------------------------------
-    async def append_message(self, message: Dict[str, Any]) -> None:
-        """
-        Recibe un dict:
-        {
-            "id": "uuid-msg",
-            "thread_id": "conversation_id",
-            "author": "user" | "assistant" | "system",
-            "content": "…",
-            "timestamp": "2025-05-28T19:25:00Z",
-            "tokens": 123
+        users_container = await (await self._get_users())
+        user_doc = {
+            "id": user.identifier,  # Cosmos’ “id” field can match Chainlit’s identifier
+            "identifier": user.identifier,
+            "name": user.name,
+            "email": user.email,
+            # store any extra fields you want (e.g. picture, metadata…)
         }
+        await users_container.upsert_item(body=user_doc)
+
+    # ── feedback API (stubs) ──────────────────────────────────────────
+
+    async def upsert_feedback(self, *args, **kwargs):
+        pass
+
+    async def delete_feedback(self, *args, **kwargs):
+        pass
+
+    # ── elements / steps (stubs for now) ──────────────────────────────
+
+    async def create_element(self, *args, **kwargs):
+        pass
+
+    async def get_element(self, *args, **kwargs):
+        return None
+
+    async def delete_element(self, *args, **kwargs):
+        pass
+
+    async def create_step(self, *args, **kwargs):
+        pass
+
+    async def update_step(self, *args, **kwargs):
+        pass
+
+    async def delete_step(self, *args, **kwargs):
+        pass
+
+    # ── misc utilities (stub) ─────────────────────────────────────────
+
+    async def build_debug_url(self, thread_id: str | None = None) -> str | None:
         """
-        doc = {
-            **message,
-            "conversation_id": message["thread_id"],  # partition key
-            "type": "message",
-        }
-        await self._upsert(doc)
-
-    # ---------- NOT USED (pero requeridos por interfaz) -------------------
-    async def delete_message(self, message_id: str, thread_id: str) -> None:
-        try:
-            await self.container.delete_item(message_id, partition_key=thread_id)
-        except cos_ex.CosmosResourceNotFoundError:
-            pass
-
-    async def update_message(
-        self, message_id: str, thread_id: str, metadata: Dict[str, Any]
-    ) -> None:
-        try:
-            doc = await self.container.read_item(message_id, partition_key=thread_id)
-            doc.update(metadata)
-            await self._upsert(doc)
-        except cos_ex.CosmosResourceNotFoundError:
-            pass
+        Return a URL where someone can inspect the 'thread_id' document
+        in Azure Cosmos DB Explorer (or similar). If no thread_id is given,
+        return a general link to the Cosmos container.
+        """
+        # For example, if you want a per-thread URL, you could do:
+        if thread_id:
+            return (
+                f"https://portal.azure.com/#view/"
+                f"Microsoft_Azure_CosmosDB/DatabaseId/{self._db_name}"
+                f"/containerId/{self._threads_id}"
+                f"/itemId/{thread_id}"
+            )
+        else:
+            # Fallback to the container’s “browse” page (or just return None)
+            return None
