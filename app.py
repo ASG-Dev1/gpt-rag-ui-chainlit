@@ -11,7 +11,7 @@ from chainlit import Action
 
 from chainlit.types import ThreadDict
 from chainlit import Text, ElementSidebar
-
+from chainlit.data import BaseDataLayer
 from orchestrator_client import call_orchestrator_stream
 from cosmos_layer import CosmosDataLayer
 from dotenv import load_dotenv
@@ -19,11 +19,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-my_secret = os.getenv("CHAINLIT_AUTH_SECRET")
-print("CHAINLIT_AUTH_SECRET:", my_secret)
-my_auth = os.getenv("CHAINLIT_AUTH")
-print("CHAINLIT_AUTH:", my_auth)
-
+# my_secret = os.getenv("CHAINLIT_AUTH_SECRET")
+# print("CHAINLIT_AUTH_SECRET:", my_secret)
+# my_auth = os.getenv("CHAINLIT_AUTH")
+# print("CHAINLIT_AUTH:", my_auth)
+print("💥 Chainlit version =", cl.__version__)
+print("ENABLE_AUTH =", os.getenv("ENABLE_AUTH"))
+print("CHAINLIT_USERNAME =", os.getenv("CHAINLIT_USERNAME"))
 # Constants
 UUID_REGEX = re.compile(
     r"^\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s+",
@@ -58,7 +60,6 @@ REFERENCE_REGEX = re.compile(
 TERMINATE_TOKEN = "TERMINATE"
 
 
-# cl.data_layer = CosmosDataLayer()
 @cl.data_layer
 def get_data_layer():
     return CosmosDataLayer(
@@ -102,6 +103,10 @@ def check_authorization() -> dict:
             "authorized": metadata.get("authorized", True),
             "client_principal_id": metadata.get("client_principal_id", "no-auth"),
             "client_principal_name": metadata.get("client_principal_name", "anonymous"),
+            "email": metadata.get("email", "unknown"),
+            "name": metadata.get(
+                "client_principal_name", "anonymous"
+            ),  # you could rename later
             "client_group_names": metadata.get("client_group_names", []),
             "access_token": metadata.get("access_token"),
         }
@@ -110,6 +115,8 @@ def check_authorization() -> dict:
         "authorized": True,
         "client_principal_id": "no-auth",
         "client_principal_name": "anonymous",
+        "email": "unknown",
+        "name": "anonymous",
         "client_group_names": [],
         "access_token": None,
     }
@@ -147,16 +154,39 @@ async def chat_profiles():
 
 
 # Defines a callback for password-based authentication
+# @cl.password_auth_callback
+# def login(username: str, password: str):
+#     class SimpleUser:
+#         def __init__(self, identifier):
+#             self.identifier = identifier
+#             self.id = identifier  # Chainlit uses this as `user_id` in the thread
+#             self.metadata = {
+#                 "email": identifier,
+#                 "client_principal_id": identifier,
+#                 "client_principal_name": identifier,
+#                 "chat_profile": "rag",  # 👈 this is critical for history filtering
+#             }
+
+#         def to_dict(self):
+#             return {"identifier": self.identifier, "metadata": self.metadata}
+
+
+#     if username == "admin" and password == "1234":
+#         return SimpleUser("admin")
+#     return None
 @cl.password_auth_callback
 def login(username: str, password: str):
     class SimpleUser:
         def __init__(self, identifier):
             self.identifier = identifier
+            self.id = identifier
             self.metadata = {
                 "email": identifier,
                 "client_principal_id": identifier,
                 "client_principal_name": identifier,
-                "chat_profile": "rag",  # 🔥 this is the key
+                "name": identifier,
+                "authorized": True,
+                "chat_profile": "rag",
             }
 
         def to_dict(self):
@@ -199,6 +229,7 @@ async def handle_message(message: cl.Message):
     response_msg = cl.Message(content="")
 
     app_user = cl.user_session.get("user")
+    print("🔐 Local user session:", cl.user_session.get("user"))
     if app_user and not app_user.metadata.get("authorized", True):
         await response_msg.stream_token(
             "Oops! It looks like you don’t have access to this service."
@@ -273,8 +304,7 @@ async def handle_message(message: cl.Message):
             pass
 
     cl.user_session.set("conversation_id", conversation_id)
-    # await update_sidebar()
-    # Strip TERMINATE before saving
+
     full_text = full_text.replace(TERMINATE_TOKEN, "").strip()
 
     message_list = cl.user_session.get("message_list") or []

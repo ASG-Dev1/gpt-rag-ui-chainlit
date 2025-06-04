@@ -28,11 +28,13 @@ provider = "password"       # built-in basic login form
 
 # For CosmosDB, set these:
 [cosmosdb]
-enabled = true
 uri = "${COSMOS_DB_URI}"
 key = "${COSMOS_DB_KEY}"
 database = "db0-wvvannyqg5e74"
 container = "conversations"
+
+enabled = true
+provider = "password"
 
 
 [data_layer]
@@ -76,6 +78,8 @@ edit_message = true
 [features.audio]
     # Sample rate of the audio
     sample_rate = 24000
+
+
 
 [UI]
 # Name of the assistant.

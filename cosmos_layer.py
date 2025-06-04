@@ -14,6 +14,7 @@ or a stub that does nothing but satisfy the ABC.  Enough to unlock:
 from __future__ import annotations  # Python <3.12 compatibility
 
 import uuid
+from datetime import datetime, timezone
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -90,6 +91,8 @@ class CosmosDataLayer(BaseDataLayer):
                 "id": thread_id,
                 "user_id": user_id,
                 "messages": [],
+                "summary": "New conversation",
+                "createdAt": datetime.now(timezone.utc).isoformat(),
             }
         )
         return thread_id
@@ -99,32 +102,36 @@ class CosmosDataLayer(BaseDataLayer):
             container = await self._get_threads()
 
             query = """
-            SELECT
-            c.id,
-            c.summary,
-            c.messages[0] AS preview
+            SELECT c.id, c.summary, c.createdAt
             FROM c
             WHERE c.user_id = @user_id
             ORDER BY c._ts DESC
             """
             params = [{"name": "@user_id", "value": filters.userId}]
             print("🔎 filters.userId =", filters.userId)
-            items = container.query_items(query=query, parameters=params)
 
-            results = [item async for item in items]
+            items = container.query_items(query=query, parameters=params)
+            results = []
+
+            async for item in items:
+                results.append(
+                    {
+                        "id": item["id"],
+                        "summary": item.get("summary", "No summary"),
+                        "createdAt": item.get(
+                            "createdAt", datetime.now(timezone.utc).isoformat()
+                        ),
+                    }
+                )
 
             return PaginatedResponse(
                 data=results,
-                pageInfo=PageInfo(
-                    hasNextPage=False, startCursor=None, endCursor=None
-                ),  # or True, if the pagination supports more results
+                pageInfo=PageInfo(hasNextPage=False, startCursor=None, endCursor=None),
             )
 
         except exceptions.CosmosHttpResponseError as e:
-            import logging
-
             logging.error(f"[cosmos_layer] Failed to fetch threads: {e}")
-            return []
+            return PaginatedResponse(data=[], pageInfo=PageInfo(False, None, None))
 
     async def get_thread(self, thread_id: str) -> Optional[Dict[str, Any]]:
         cont = await self._get_threads()
@@ -137,14 +144,26 @@ class CosmosDataLayer(BaseDataLayer):
     async def append_message(self, thread_id: str, message: Dict[str, Any]):
         cont = await self._get_threads()
         item = await cont.read_item(thread_id, partition_key=thread_id)
-        item.setdefault("messages", []).append(message)
+        item.setdefault("messages", [])
+        item["messages"].append(
+            {
+                "author": message.get("author", "user"),
+                "content": message.get("content", ""),
+                "createdAt": datetime.now(timezone.utc).isoformat(),
+            }
+        )
         await cont.replace_item(item=item, body=item)
 
     async def update_thread(self, thread_id: str, **kwargs):
+        print("✅ update_thread CALLED")
         # Called, e.g., when Chainlit stores a summary.
         cont = await self._get_threads()
         item = await cont.read_item(thread_id, partition_key=thread_id)
-        item.update(kwargs)
+        allowed_keys = {"summary"}
+        for k, v in kwargs.items():
+            if k in allowed_keys:
+                item[k] = v
+        print("🔧 kwargs received:", kwargs)
         await cont.replace_item(item=item, body=item)
 
     async def delete_thread(self, thread_id: str):
