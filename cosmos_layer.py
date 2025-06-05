@@ -90,6 +90,7 @@ class CosmosDataLayer(BaseDataLayer):
             {
                 "id": thread_id,
                 "user_id": user_id,
+                "name": "New conversation",
                 "messages": [],
                 "summary": "New conversation",
                 "createdAt": datetime.now(timezone.utc).isoformat(),
@@ -100,11 +101,9 @@ class CosmosDataLayer(BaseDataLayer):
     async def list_threads(self, pagination, filters):
         try:
             container = await self._get_threads()
-
             query = """
-            SELECT c.id, c.summary, c.createdAt
+            SELECT c.id, c.name, c.summary, c.createdAt, c.updatedAt
             FROM c
-            WHERE c.user_id = @user_id
             ORDER BY c._ts DESC
             """
             params = [{"name": "@user_id", "value": filters.userId}]
@@ -117,9 +116,11 @@ class CosmosDataLayer(BaseDataLayer):
                 results.append(
                     {
                         "id": item["id"],
+                        "name": item.get("name", "Untitled Conversation"),
                         "summary": item.get("summary", "No summary"),
-                        "createdAt": item.get(
-                            "createdAt", datetime.now(timezone.utc).isoformat()
+                        "updatedAt": item.get(
+                            "updatedAt",
+                            datetime.now(timezone.utc).isoformat(),
                         ),
                     }
                 )
@@ -145,13 +146,24 @@ class CosmosDataLayer(BaseDataLayer):
         cont = await self._get_threads()
         item = await cont.read_item(thread_id, partition_key=thread_id)
         item.setdefault("messages", [])
+        # item["messages"].append(
+        #     {
+        #         "author": message.get("author", "user"),
+        #         "content": message.get("content", ""),
+        #         "createdAt": datetime.now(timezone.utc).isoformat(),
+        #     }
+        # )
+        # await cont.replace_item(item=item, body=item)
         item["messages"].append(
             {
-                "author": message.get("author", "user"),
+                "id": message.get("id", str(uuid.uuid4())),
+                "role": message.get("role", "user"),
+                "author": {"identifier": message.get("author", "user")},
                 "content": message.get("content", ""),
                 "createdAt": datetime.now(timezone.utc).isoformat(),
             }
         )
+        item["updatedAt"] = datetime.now(timezone.utc).isoformat()
         await cont.replace_item(item=item, body=item)
 
     async def update_thread(self, thread_id: str, **kwargs):
@@ -159,10 +171,12 @@ class CosmosDataLayer(BaseDataLayer):
         # Called, e.g., when Chainlit stores a summary.
         cont = await self._get_threads()
         item = await cont.read_item(thread_id, partition_key=thread_id)
-        allowed_keys = {"summary"}
+        allowed_keys = {"name", "summary"}
         for k, v in kwargs.items():
             if k in allowed_keys:
                 item[k] = v
+            if "updatedAt" not in item or k == "summary":
+                item["updatedAt"] = datetime.now(timezone.utc).isoformat()
         print("🔧 kwargs received:", kwargs)
         await cont.replace_item(item=item, body=item)
 

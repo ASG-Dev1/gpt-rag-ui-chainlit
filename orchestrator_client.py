@@ -81,8 +81,10 @@ async def call_orchestrator_stream(
         "client_principal_name": auth_info.get("client_principal_name", "anonymous"),
         "client_group_names": auth_info.get("client_group_names", []),
         "access_token": auth_info.get("access_token"),
-        "email": auth_info.get("email", "unknown"),
-        "name": auth_info.get("name", "anonymous"),
+        # "email": auth_info.get("email", "unknown"),
+        # "name": auth_info.get("name", "anonymous"),
+        "email": auth_info["email"],  # "admin"
+        "name": auth_info["name"],  # "admin"
     }
 
     async with httpx.AsyncClient(timeout=None) as client:

@@ -155,27 +155,6 @@ async def chat_profiles():
     ]
 
 
-# Defines a callback for password-based authentication
-# @cl.password_auth_callback
-# def login(username: str, password: str):
-#     class SimpleUser:
-#         def __init__(self, identifier):
-#             self.identifier = identifier
-#             self.id = identifier  # Chainlit uses this as `user_id` in the thread
-#             self.metadata = {
-#                 "email": identifier,
-#                 "client_principal_id": identifier,
-#                 "client_principal_name": identifier,
-#                 "chat_profile": "rag",  # 👈 this is critical for history filtering
-#             }
-
-#         def to_dict(self):
-#             return {"identifier": self.identifier, "metadata": self.metadata}
-
-
-#     if username == "admin" and password == "1234":
-#         return SimpleUser("admin")
-#     return None
 @cl.password_auth_callback
 def login(username: str, password: str):
     class SimpleUser:
