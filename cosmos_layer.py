@@ -134,12 +134,38 @@ class CosmosDataLayer(BaseDataLayer):
             logging.error(f"[cosmos_layer] Failed to fetch threads: {e}")
             return PaginatedResponse(data=[], pageInfo=PageInfo(False, None, None))
 
+    # async def get_thread(self, thread_id: str) -> Optional[Dict[str, Any]]:
+    #     cont = await self._get_threads()
+    #     print(f"🔎 get_thread called with id={thread_id}")
+    #     try:
+    #         item = await cont.read_item(item=thread_id, partition_key=thread_id)
+    #         print(f"✅ found: {item}")
+    #         return item
+    #     except Exception as e:
+    #         print(f"❌ NOT found: {thread_id}, error={e}")
+    #         return None
+
     async def get_thread(self, thread_id: str) -> Optional[Dict[str, Any]]:
         cont = await self._get_threads()
+        print(f"🔎 get_thread called with id={thread_id}")
         try:
-            return await cont.read_item(item=thread_id, partition_key=thread_id)
-        except Exception:
-            logging.exception("Thread %s not found", thread_id)
+            item = await cont.read_item(item=thread_id, partition_key=thread_id)
+            print(f"✅ found: {item}")
+            # Strip Cosmos system fields before returning to Chainlit!
+            allowed_keys = {
+                "id",
+                "user_id",
+                "user_name",
+                "name",
+                "summary",
+                "createdAt",
+                "updatedAt",
+                "messages",
+            }
+            clean_item = {k: v for k, v in item.items() if k in allowed_keys}
+            return clean_item
+        except Exception as e:
+            print(f"❌ NOT found: {thread_id}, error={e}")
             return None
 
     async def append_message(self, thread_id: str, message: Dict[str, Any]):
