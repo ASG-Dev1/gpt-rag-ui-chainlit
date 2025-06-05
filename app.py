@@ -97,23 +97,35 @@ def replace_source_reference_links(text: str) -> str:
     return re.sub(REFERENCE_REGEX, replacer, text)
 
 
+# def check_authorization() -> dict:
+#     app_user = cl.user_session.get("user")
+#     if app_user:
+#         metadata = app_user.metadata or {}
+#         return {
+#             "authorized": metadata.get("authorized", True),
+#             "client_principal_id": metadata.get("client_principal_id", "no-auth"),
+#             "client_principal_name": metadata.get("client_principal_name", "anonymous"),
+#             "email": metadata.get("email", "unknown"),
+#             "name": metadata.get(
+#                 "client_principal_name", "anonymous"
+#             ),  # you could rename later
+#             "client_group_names": metadata.get("client_group_names", []),
+#             "access_token": metadata.get("access_token"),
+#         }
+
+
+#     return {
+#         "authorized": True,
+#         "client_principal_id": "no-auth",
+#         "client_principal_name": "anonymous",
+#         "email": "unknown",
+#         "name": "anonymous",
+#         "client_group_names": [],
+#         "access_token": None,
+#     }
 def check_authorization() -> dict:
     app_user = cl.user_session.get("user")
-    if app_user:
-        metadata = app_user.metadata or {}
-        return {
-            "authorized": metadata.get("authorized", True),
-            "client_principal_id": metadata.get("client_principal_id", "no-auth"),
-            "client_principal_name": metadata.get("client_principal_name", "anonymous"),
-            "email": metadata.get("email", "unknown"),
-            "name": metadata.get(
-                "client_principal_name", "anonymous"
-            ),  # you could rename later
-            "client_group_names": metadata.get("client_group_names", []),
-            "access_token": metadata.get("access_token"),
-        }
-
-    return {
+    result = {
         "authorized": True,
         "client_principal_id": "no-auth",
         "client_principal_name": "anonymous",
@@ -122,6 +134,34 @@ def check_authorization() -> dict:
         "client_group_names": [],
         "access_token": None,
     }
+    if app_user:
+        # Prefer metadata, fallback to user.identifier if metadata is empty
+        metadata = getattr(app_user, "metadata", {}) or {}
+        if metadata:
+            result["authorized"] = metadata.get("authorized", True)
+            result["client_principal_id"] = metadata.get(
+                "client_principal_id", metadata.get("email", "no-auth")
+            )
+            result["client_principal_name"] = metadata.get(
+                "client_principal_name", metadata.get("email", "anonymous")
+            )
+            result["email"] = metadata.get(
+                "email", metadata.get("client_principal_name", "unknown")
+            )
+            result["name"] = metadata.get(
+                "name", metadata.get("client_principal_name", "anonymous")
+            )
+            result["client_group_names"] = metadata.get("client_group_names", [])
+            result["access_token"] = metadata.get("access_token")
+        else:
+            # No metadata: use identifier for everything
+            identifier = getattr(app_user, "identifier", None)
+            if identifier:
+                result["client_principal_id"] = identifier
+                result["client_principal_name"] = identifier
+                result["email"] = identifier
+                result["name"] = identifier
+    return result
 
 
 # Defines a list of available chat profiles (e.g, different assistant personas)
@@ -155,8 +195,42 @@ async def chat_profiles():
     ]
 
 
+# USERS = {"admin": "1234", "james": "0000", "csaez": "0404"}
+
+
+# @cl.password_auth_callback
+# def login(username: str, password: str):
+#     class SimpleUser:
+#         def __init__(self, identifier):
+#             self.identifier = identifier
+#             self.id = identifier
+#             self.metadata = {
+#                 "email": identifier,
+#                 "client_principal_id": identifier,
+#                 "client_principal_name": identifier,
+#                 "name": identifier,
+#                 "authorized": True,
+#                 "chat_profile": "rag",
+#             }
+
+#         def to_dict(self):
+#             return {"identifier": self.identifier, "metadata": self.metadata}
+
+#     # if username == "admin" and password == "1234":
+#     #     return SimpleUser("admin")
+#     # return None
+#     if USERS.get(username) == password:
+#         return SimpleUser(username)
+#     return None
+
+USERS = {"admin": "1234", "james": "0000", "csaez": "0404"}
+
+
 @cl.password_auth_callback
 def login(username: str, password: str):
+    import asyncio
+    from cosmos_layer import CosmosDataLayer
+
     class SimpleUser:
         def __init__(self, identifier):
             self.identifier = identifier
@@ -173,15 +247,28 @@ def login(username: str, password: str):
         def to_dict(self):
             return {"identifier": self.identifier, "metadata": self.metadata}
 
-    if username == "admin" and password == "1234":
-        return SimpleUser("admin")
+    if USERS.get(username) == password:
+        user = SimpleUser(username)
+        # ---- NEW: Ensure user exists in CosmosDB ----
+        dl = CosmosDataLayer(
+            endpoint=os.getenv("COSMOS_DB_URI"),
+            key=os.getenv("COSMOS_DB_KEY"),
+            database_name=os.getenv("AZURE_DB_ID", "db0-wvvannyqg5e74"),
+            container_threads=os.getenv("AZURE_CONTAINER_NAME", "conversations"),
+            container_users=os.getenv("AZURE_USER_CONTAINER", "users"),
+        )
+        # This should be an async method in your CosmosDataLayer:
+        asyncio.run(dl.ensure_user_exists(user.to_dict()))
+        # ---------------------------------------------
+        return user
     return None
 
 
 @cl.on_chat_start
 async def on_chat_start():
     cl.user_session.set("conversation_id", str(uuid.uuid4()))
-
+    user = cl.user_session.get("user")
+    print(f"🟢 on_chat_start: user = {user}")
     # Show welcome message and action buttons in chat
     await cl.Message(
         content="👋 Welcome to ASGPT 2.0! Select a past conversation to resume:",
@@ -200,11 +287,17 @@ async def on_resume_convo(action: cl.Action):
 # Resume a previous chat session, restore conversation context
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
+    print("🟢 Chat resume triggered")
+    print(f"thread id: {thread['id']}")
+    print(f"session user: {cl.user_session.get('user')}")
     cl.user_session.set("conversation_id", thread["id"])
 
 
 @cl.on_message
 async def handle_message(message: cl.Message):
+    user = cl.user_session.get("user")
+    print(f"🟠 on_message: user = {user}")
+
     message.id = message.id or str(uuid.uuid4())
     conversation_id = cl.user_session.get("conversation_id") or ""
     response_msg = cl.Message(content="")

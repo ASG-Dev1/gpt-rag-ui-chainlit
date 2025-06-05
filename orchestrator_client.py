@@ -58,7 +58,7 @@ def get_function_key():
 async def call_orchestrator_stream(
     conversation_id: str, question: str, auth_info: dict
 ):
-
+    print("🟦 auth_info for orchestrator:", auth_info)
     url = os.getenv("ORCHESTRATOR_STREAM_ENDPOINT")
     if not url:
         raise Exception("ORCHESTRATOR_STREAM_ENDPOINT not set in environment variables")
@@ -81,8 +81,6 @@ async def call_orchestrator_stream(
         "client_principal_name": auth_info.get("client_principal_name", "anonymous"),
         "client_group_names": auth_info.get("client_group_names", []),
         "access_token": auth_info.get("access_token"),
-        # "email": auth_info.get("email", "unknown"),
-        # "name": auth_info.get("name", "anonymous"),
         "email": auth_info["email"],  # "admin"
         "name": auth_info["name"],  # "admin"
     }

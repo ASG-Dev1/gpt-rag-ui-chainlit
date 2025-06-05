@@ -61,6 +61,38 @@ class CosmosDataLayer(BaseDataLayer):
         self._threads = None
         self._users = None
 
+    async def ensure_user_exists(self, user_dict):
+        users_container = await self._get_users()
+        try:
+            await users_container.read_item(
+                item=user_dict["identifier"], partition_key=user_dict["identifier"]
+            )
+        except Exception:
+            await users_container.create_item(
+                {
+                    "id": user_dict["identifier"],
+                    "identifier": user_dict["identifier"],  # always add this!
+                    "email": user_dict["metadata"]["email"],
+                    "client_principal_id": user_dict["metadata"]["client_principal_id"],
+                    "client_principal_name": user_dict["metadata"][
+                        "client_principal_name"
+                    ],
+                    "name": user_dict["metadata"]["name"],
+                    "authorized": user_dict["metadata"].get("authorized", True),
+                    "chat_profile": user_dict["metadata"].get("chat_profile", "rag"),
+                    "type": "user",
+                }
+            )
+
+    async def _get_users(self):
+        if not self._users:
+            db = await self._client.create_database_if_not_exists(self._db_name)
+            self._users = await db.create_container_if_not_exists(
+                id=self._users_id,
+                partition_key=PartitionKey(path="/id"),
+            )
+        return self._users
+
     # ── internal helpers ──────────────────────────────────────────────
 
     async def _get_threads(self):
@@ -84,6 +116,7 @@ class CosmosDataLayer(BaseDataLayer):
     # ── threads & messages (the pieces the sidebar needs) ─────────────
 
     async def create_thread(self, user_id: str) -> str:
+        print(f"🚨 Creating thread for user_id = {user_id}")
         cont = await self._get_threads()
         thread_id = str(uuid.uuid4())
         await cont.create_item(
@@ -104,6 +137,7 @@ class CosmosDataLayer(BaseDataLayer):
             query = """
             SELECT c.id, c.name, c.summary, c.createdAt, c.updatedAt
             FROM c
+            WHERE c.user_id = @user_id
             ORDER BY c._ts DESC
             """
             params = [{"name": "@user_id", "value": filters.userId}]
@@ -229,12 +263,23 @@ class CosmosDataLayer(BaseDataLayer):
         except CosmosResourceNotFoundError:
             return None
 
-        # Build a chainlit.User and then set `user.id = identifier`
+        # # Build a chainlit.User and then set `user.id = identifier`
+        # u = User(
+        #     identifier=user_doc.get("identifier"),
+        #     name=user_doc.get("username", user_doc.get("identifier")),
+        #     email=user_doc.get("email"),
+        # )
+        # Defensive: fallback to id if identifier is missing
+        identifier_val = user_doc.get("identifier", user_doc.get("id"))
+        name_val = user_doc.get("name", identifier_val)
+        email_val = user_doc.get("email", identifier_val)
+
         u = User(
-            identifier=user_doc.get("identifier"),
-            name=user_doc.get("username", user_doc.get("identifier")),
-            email=user_doc.get("email"),
+            identifier=identifier_val,
+            name=name_val,
+            email=email_val,
         )
+        u.id = identifier_val
         # Attach the `id` attribute that Chainlit’s sidebar/resume logic needs:
         u.id = identifier
         return u
@@ -244,7 +289,8 @@ class CosmosDataLayer(BaseDataLayer):
         Chainlit calls this when a new user signs up (or first appears).
         We should write the User data into Cosmos so that future get_user(...) can find it.
         """
-        users_container = await (await self._get_users())
+        # users_container = await (await self._get_users())
+        users_container = await self._get_users()
         user_doc = {
             "id": user.identifier,  # Cosmos’ “id” field can match Chainlit’s identifier
             "identifier": user.identifier,
