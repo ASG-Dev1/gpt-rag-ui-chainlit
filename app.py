@@ -67,6 +67,8 @@ def get_data_layer():
         key=os.getenv("COSMOS_DB_KEY") or cl.config.cosmosdb.key,
         database_name=os.getenv("AZURE_DB_ID", "db0-wvvannyqg5e74"),
         container_threads=os.getenv("AZURE_CONTAINER_NAME", "conversations"),
+        # opcional: contenedor de usuarios (si lo usas)
+        container_users=os.getenv("AZURE_USER_CONTAINER", "users"),
     )
 
 
