@@ -264,33 +264,37 @@ def login(username: str, password: str):
     return None
 
 
+# @cl.on_chat_start
+# async def start(user: cl.User):  # ←  injected automatically
+#     dl = cl.app.data_layer  # your CosmosDataLayer
+
+#     # Do we already have a thread id stored for this tab?
+#     thread_id = cl.user_session.get("thread_id")
+#     if not thread_id:
+#         thread_id = await dl.create_thread(user.identifier)  # first visit → create
+#         cl.user_session.set("thread_id", thread_id)
+
+#     # Tell Chainlit which conversation all subsequent messages belong to
+#     cl.context.current_thread_id = thread_id
+
+#     await cl.Message(f"👋 Welcome {user.name or user.identifier}!").send()
+
+
 @cl.on_chat_start
-async def on_chat_start():
-    cl.user_session.set("conversation_id", str(uuid.uuid4()))
-    user = cl.user_session.get("user")
-    print(f"🟢 on_chat_start: user = {user}")
-    # Show welcome message and action buttons in chat
-    await cl.Message(
-        content="👋 Welcome to ASGPT 2.0! Select a past conversation to resume:",
-    ).send()
+async def start():  #  ←  ⚠️  NO parameters here
+    # Grab the user that the auth layer put in the session
+    app_user = cl.user_session.get("user")  # cl.User instance
+    if app_user:
+        await cl.Message(f"Hi {app_user.identifier}!").send()
+    else:
+        await cl.Message("Hi there!").send()
 
 
-@cl.action_callback("resume_convo")
-async def on_resume_convo(action: cl.Action):
-    convo_id = action.payload["value"]
-    print(f"💥 CLICKED: {convo_id}")
-    cl.user_session.set("conversation_id", convo_id)
-
-    await cl.Message(content=f"🔄 Resuming conversation {convo_id}").send()
-
-
-# Resume a previous chat session, restore conversation context
 @cl.on_chat_resume
-async def on_chat_resume(thread: ThreadDict):
-    print("🟢 Chat resume triggered")
-    print(f"thread id: {thread['id']}")
-    print(f"session user: {cl.user_session.get('user')}")
-    cl.user_session.set("conversation_id", thread["id"])
+async def resume(thread):
+    # thread already contains steps & elements
+    # reconstruct any state you need here
+    await cl.Message(content="👍 Back where we left off!").send()
 
 
 @cl.on_message
