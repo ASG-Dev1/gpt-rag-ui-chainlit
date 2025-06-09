@@ -166,24 +166,36 @@ class CosmosDataLayer(BaseDataLayer):
         try:
             doc = await cont.read_item(item=thread_id, partition_key=thread_id)
         except CosmosResourceNotFoundError:
-            # create an empty thread so UI can resume
-            now = _iso_now()
-            doc = {
-                "id": thread_id,
-                "name": "New conversation",
-                "createdAt": now,
-                "updatedAt": now,
-                "steps": [],  # ← ★ REQUIRED
-                "elements": [],  # ← optional but useful
-                "metadata": {},
-            }
-            await cont.create_item(doc)
-
+            return None  # ← CHANGE IS HERE: Do NOT create a new thread!
         # **ALSO** fetch the steps that belong to this thread
         steps = await self._list_steps(thread_id)  # implement this!
         doc["steps"] = steps
 
         return doc
+
+    # async def get_thread(self, thread_id: str) -> ThreadDict | None:
+    #     cont = await self._get_threads()
+    #     try:
+    #         doc = await cont.read_item(item=thread_id, partition_key=thread_id)
+    #     except CosmosResourceNotFoundError:
+    #         # create an empty thread so UI can resume
+    #         now = _iso_now()
+    #         doc = {
+    #             "id": thread_id,
+    #             "name": "New conversation",
+    #             "createdAt": now,
+    #             "updatedAt": now,
+    #             "steps": [],  # ← ★ REQUIRED
+    #             "elements": [],  # ← optional but useful
+    #             "metadata": {},
+    #         }
+    #         await cont.create_item(doc)
+
+    #     # **ALSO** fetch the steps that belong to this thread
+    #     steps = await self._list_steps(thread_id)  # implement this!
+    #     doc["steps"] = steps
+
+    #     return doc
 
     async def append_message(self, thread_id: str, message: Dict[str, Any]):
         cont = await self._get_threads()
@@ -201,14 +213,6 @@ class CosmosDataLayer(BaseDataLayer):
         doc["updatedAt"] = _iso_now()
         await cont.replace_item(item=doc, body=doc, partition_key=thread_id)
 
-    # async def update_thread(self, thread_id: str, **kwargs):
-    #     cont = await self._get_threads()
-    #     doc = await cont.read_item(item=thread_id, partition_key=thread_id)
-    #     for k in ("name", "summary"):
-    #         if k in kwargs:
-    #             doc[k] = kwargs[k]
-    #     doc["updatedAt"] = _iso_now()
-    #     await cont.replace_item(item=doc, body=doc, partition_key=thread_id)
     async def update_thread(self, thread_id: str, **kwargs):
         cont = await self._get_threads()
         try:

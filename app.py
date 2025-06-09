@@ -97,32 +97,6 @@ def replace_source_reference_links(text: str) -> str:
     return re.sub(REFERENCE_REGEX, replacer, text)
 
 
-# def check_authorization() -> dict:
-#     app_user = cl.user_session.get("user")
-#     if app_user:
-#         metadata = app_user.metadata or {}
-#         return {
-#             "authorized": metadata.get("authorized", True),
-#             "client_principal_id": metadata.get("client_principal_id", "no-auth"),
-#             "client_principal_name": metadata.get("client_principal_name", "anonymous"),
-#             "email": metadata.get("email", "unknown"),
-#             "name": metadata.get(
-#                 "client_principal_name", "anonymous"
-#             ),  # you could rename later
-#             "client_group_names": metadata.get("client_group_names", []),
-#             "access_token": metadata.get("access_token"),
-#         }
-
-
-#     return {
-#         "authorized": True,
-#         "client_principal_id": "no-auth",
-#         "client_principal_name": "anonymous",
-#         "email": "unknown",
-#         "name": "anonymous",
-#         "client_group_names": [],
-#         "access_token": None,
-#     }
 def check_authorization() -> dict:
     app_user = cl.user_session.get("user")
     result = {
@@ -195,34 +169,6 @@ async def chat_profiles():
     ]
 
 
-# USERS = {"admin": "1234", "james": "0000", "csaez": "0404"}
-
-
-# @cl.password_auth_callback
-# def login(username: str, password: str):
-#     class SimpleUser:
-#         def __init__(self, identifier):
-#             self.identifier = identifier
-#             self.id = identifier
-#             self.metadata = {
-#                 "email": identifier,
-#                 "client_principal_id": identifier,
-#                 "client_principal_name": identifier,
-#                 "name": identifier,
-#                 "authorized": True,
-#                 "chat_profile": "rag",
-#             }
-
-#         def to_dict(self):
-#             return {"identifier": self.identifier, "metadata": self.metadata}
-
-#     # if username == "admin" and password == "1234":
-#     #     return SimpleUser("admin")
-#     # return None
-#     if USERS.get(username) == password:
-#         return SimpleUser(username)
-#     return None
-
 USERS = {"admin": "1234", "james": "0000", "csaez": "0404"}
 
 
@@ -264,37 +210,20 @@ def login(username: str, password: str):
     return None
 
 
-# @cl.on_chat_start
-# async def start(user: cl.User):  # ←  injected automatically
-#     dl = cl.app.data_layer  # your CosmosDataLayer
-
-#     # Do we already have a thread id stored for this tab?
-#     thread_id = cl.user_session.get("thread_id")
-#     if not thread_id:
-#         thread_id = await dl.create_thread(user.identifier)  # first visit → create
-#         cl.user_session.set("thread_id", thread_id)
-
-#     # Tell Chainlit which conversation all subsequent messages belong to
-#     cl.context.current_thread_id = thread_id
-
-#     await cl.Message(f"👋 Welcome {user.name or user.identifier}!").send()
-
-
 @cl.on_chat_start
-async def start():  #  ←  ⚠️  NO parameters here
-    # Grab the user that the auth layer put in the session
-    app_user = cl.user_session.get("user")  # cl.User instance
-    if app_user:
-        await cl.Message(f"Hi {app_user.identifier}!").send()
-    else:
-        await cl.Message("Hi there!").send()
+async def on_chat_start():
+    cl.user_session.set("conversation_id", str(uuid.uuid4()))
+
+    # Show welcome message and action buttons in chat
+    await cl.Message(
+        content="👋 Welcome to ASGPT 2.0! Select a past conversation to resume:",
+    ).send()
 
 
 @cl.on_chat_resume
 async def resume(thread):
-    # thread already contains steps & elements
-    # reconstruct any state you need here
-    await cl.Message(content="👍 Back where we left off!").send()
+    cl.user_session.set("conversation_id", thread["id"])
+    cl.Message(content="👍 Back where we left off!").send()
 
 
 @cl.on_message
