@@ -119,11 +119,6 @@ class CosmosDataLayer(BaseDataLayer):
 
     async def list_threads(self, pagination: Pagination, filters):
         cont = await self._get_threads()
-
-        # ⚠️  System property _ts cannot be used in ORDER BY in a cross-partition query.
-        #     We sort by updatedAt instead (string ISO-8601 → right order) and
-        #     supply enable_cross_partition_query=True – the async SDK *does* accept it
-        #     when spelled exactly like this.
         query_str = """
         SELECT
           c.id,
@@ -154,12 +149,49 @@ class CosmosDataLayer(BaseDataLayer):
                 }
             )
 
-        logging.info("📋 list_threads → returned %s rows", len(rows))
+        # ✅ Only log once
+        if not hasattr(self, "_logged_threads_once") or not self._logged_threads_once:
+            logging.info(
+                "📋 list_threads → %d threads for user '%s'", len(rows), filters.userId
+            )
+
+            # ✅ Log all thread names cleanly
+            thread_names = [row["name"] for row in rows]
+            logging.info("🧵 Thread names: %s", ", ".join(thread_names))
+
+            self._logged_threads_once = True
 
         return PaginatedResponse(
             data=rows,
             pageInfo=PageInfo(hasNextPage=False, startCursor=None, endCursor=None),
         )
+
+    async def list_steps(self, thread_id: str) -> list[Dict[str, Any]]:
+        cont = await self._get_threads()
+        try:
+            doc = await cont.read_item(item=thread_id, partition_key=thread_id)
+        except CosmosResourceNotFoundError:
+            return []
+
+        steps = doc.get("messages", [])
+        logging.info(f"📨 Loaded {len(steps)} steps for thread {thread_id}")
+
+        return [
+            {
+                "id": step["id"],
+                "author": (
+                    step["author"].get("identifier", "unknown")
+                    if isinstance(step["author"], dict)
+                    else step["author"]
+                ),
+                "content": step["content"],
+                "createdAt": step.get("createdAt"),
+                "updatedAt": step.get("updatedAt", step.get("createdAt")),
+                "type": "message",
+                "role": step["role"],
+            }
+            for step in steps
+        ]
 
     async def get_thread(self, thread_id: str) -> ThreadDict | None:
         cont = await self._get_threads()
@@ -168,34 +200,10 @@ class CosmosDataLayer(BaseDataLayer):
         except CosmosResourceNotFoundError:
             return None  # ← CHANGE IS HERE: Do NOT create a new thread!
         # **ALSO** fetch the steps that belong to this thread
-        steps = await self._list_steps(thread_id)  # implement this!
+        steps = await self.list_steps(thread_id)  # implement this!
         doc["steps"] = steps
 
         return doc
-
-    # async def get_thread(self, thread_id: str) -> ThreadDict | None:
-    #     cont = await self._get_threads()
-    #     try:
-    #         doc = await cont.read_item(item=thread_id, partition_key=thread_id)
-    #     except CosmosResourceNotFoundError:
-    #         # create an empty thread so UI can resume
-    #         now = _iso_now()
-    #         doc = {
-    #             "id": thread_id,
-    #             "name": "New conversation",
-    #             "createdAt": now,
-    #             "updatedAt": now,
-    #             "steps": [],  # ← ★ REQUIRED
-    #             "elements": [],  # ← optional but useful
-    #             "metadata": {},
-    #         }
-    #         await cont.create_item(doc)
-
-    #     # **ALSO** fetch the steps that belong to this thread
-    #     steps = await self._list_steps(thread_id)  # implement this!
-    #     doc["steps"] = steps
-
-    #     return doc
 
     async def append_message(self, thread_id: str, message: Dict[str, Any]):
         cont = await self._get_threads()
@@ -207,25 +215,32 @@ class CosmosDataLayer(BaseDataLayer):
                 "role": message.get("role", "user"),
                 "author": {"identifier": message.get("author", "user")},
                 "content": message.get("content", ""),
+                "type": "message",  # ✅ Required by Chainlit
                 "createdAt": _iso_now(),
             }
         )
         doc["updatedAt"] = _iso_now()
-        await cont.replace_item(item=doc, body=doc, partition_key=thread_id)
+
+        await cont.replace_item(
+            item=doc["id"], body=doc, request_options={"partitionKey": doc["id"]}
+        )
 
     async def update_thread(self, thread_id: str, **kwargs):
         cont = await self._get_threads()
         try:
             doc = await cont.read_item(item=thread_id, partition_key=thread_id)
         except CosmosResourceNotFoundError:
-            # The conversation was deleted (or never written) – nothing to update.
             return
 
         for k in ("name", "summary"):
             if k in kwargs:
                 doc[k] = kwargs[k]
+
         doc["updatedAt"] = _iso_now()
-        await cont.replace_item(item=doc, body=doc, partition_key=thread_id)
+
+        await cont.replace_item(
+            item=doc["id"], body=doc, request_options={"partitionKey": doc["id"]}
+        )
 
     async def delete_thread(self, thread_id: str):
         cont = await self._get_threads()

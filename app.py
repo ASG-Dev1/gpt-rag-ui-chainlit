@@ -3,13 +3,25 @@ import re
 import uuid
 import json
 import logging
+
+# Only show logs from your code at INFO level or higher
+logging.basicConfig(level=logging.INFO)
+
+# Quiet down SDKs
+logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(
+    logging.WARNING
+)
+logging.getLogger("azure.cosmos").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 import urllib.parse
 from typing import Optional, Tuple
 
 import chainlit as cl
 from chainlit import Action
 
-from chainlit.types import ThreadDict
+from datetime import datetime, timezone
+
+# from chainlit.types import ThreadDict
 from chainlit import Text, ElementSidebar
 from chainlit.data import BaseDataLayer
 from orchestrator_client import call_orchestrator_stream
@@ -19,6 +31,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 # my_secret = os.getenv("CHAINLIT_AUTH_SECRET")
 # print("CHAINLIT_AUTH_SECRET:", my_secret)
 # my_auth = os.getenv("CHAINLIT_AUTH")
@@ -26,6 +42,19 @@ load_dotenv()
 print("💥 Chainlit version =", cl.__version__)
 print("ENABLE_AUTH =", os.getenv("ENABLE_AUTH"))
 print("CHAINLIT_USERNAME =", os.getenv("CHAINLIT_USERNAME"))
+
+
+@cl.data_layer
+def get_data_layer():
+    return CosmosDataLayer(
+        endpoint=os.getenv("COSMOS_DB_URI") or cl.config.cosmosdb.uri,
+        key=os.getenv("COSMOS_DB_KEY") or cl.config.cosmosdb.key,
+        database_name=os.getenv("AZURE_DB_ID", "db0-wvvannyqg5e74"),
+        container_threads=os.getenv("AZURE_CONTAINER_NAME", "conversations"),
+        container_users=os.getenv("AZURE_USER_CONTAINER", "users"),
+    )
+
+
 # Constants
 UUID_REGEX = re.compile(
     r"^\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s+",
@@ -58,18 +87,6 @@ REFERENCE_REGEX = re.compile(
 )
 
 TERMINATE_TOKEN = "TERMINATE"
-
-
-@cl.data_layer
-def get_data_layer():
-    return CosmosDataLayer(
-        endpoint=os.getenv("COSMOS_DB_URI") or cl.config.cosmosdb.uri,
-        key=os.getenv("COSMOS_DB_KEY") or cl.config.cosmosdb.key,
-        database_name=os.getenv("AZURE_DB_ID", "db0-wvvannyqg5e74"),
-        container_threads=os.getenv("AZURE_CONTAINER_NAME", "conversations"),
-        # opcional: contenedor de usuarios (si lo usas)
-        container_users=os.getenv("AZURE_USER_CONTAINER", "users"),
-    )
 
 
 # Helpers
@@ -143,16 +160,16 @@ def check_authorization() -> dict:
 async def chat_profiles():
     return [
         cl.ChatProfile(
-            name="ASGPT",
-            icon="favicon",
-            id="rag",
-            markdown_description="Main assistant profile for ASGPT answers",
-        ),
-        cl.ChatProfile(
             name="ASGPT 2.0",
             icon="🧠",
             id="rag",
             markdown_description="Main assistant profile for ASGPT 2.0 answers",
+        ),
+        cl.ChatProfile(
+            name="ASGPT",
+            icon="favicon",
+            id="rag",
+            markdown_description="Main assistant profile for ASGPT answers",
         ),
         cl.ChatProfile(
             name="GPT-RAG",
@@ -177,12 +194,19 @@ def login(username: str, password: str):
     import asyncio
     from cosmos_layer import CosmosDataLayer
 
+
+@cl.password_auth_callback
+async def login(username: str, password: str):
+    from cosmos_layer import CosmosDataLayer
+
     class SimpleUser:
         def __init__(self, identifier):
             self.identifier = identifier
             self.id = identifier
+            self.name = identifier
+            self.email = f"{identifier}@example.com"
             self.metadata = {
-                "email": identifier,
+                "email": self.email,
                 "client_principal_id": identifier,
                 "client_principal_name": identifier,
                 "name": identifier,
@@ -191,11 +215,15 @@ def login(username: str, password: str):
             }
 
         def to_dict(self):
-            return {"identifier": self.identifier, "metadata": self.metadata}
+            return {
+                "identifier": self.identifier,
+                "name": self.name,
+                "email": self.email,
+                "metadata": self.metadata,
+            }
 
     if USERS.get(username) == password:
         user = SimpleUser(username)
-        # ---- NEW: Ensure user exists in CosmosDB ----
         dl = CosmosDataLayer(
             endpoint=os.getenv("COSMOS_DB_URI"),
             key=os.getenv("COSMOS_DB_KEY"),
@@ -203,47 +231,48 @@ def login(username: str, password: str):
             container_threads=os.getenv("AZURE_CONTAINER_NAME", "conversations"),
             container_users=os.getenv("AZURE_USER_CONTAINER", "users"),
         )
-        # This should be an async method in your CosmosDataLayer:
-        asyncio.run(dl.ensure_user_exists(user.to_dict()))
-        # ---------------------------------------------
+        try:
+            await dl.ensure_user_exists(user.to_dict())
+        finally:
+            await dl.aclose()  # 👈 closes CosmosClient correctly
         return user
+
     return None
 
 
 @cl.on_chat_start
 async def on_chat_start():
-    cl.user_session.set("conversation_id", str(uuid.uuid4()))
-
-    # Show welcome message and action buttons in chat
-    await cl.Message(
-        content="👋 Welcome to ASGPT 2.0! Select a past conversation to resume:",
-    ).send()
+    await cl.Message(content="Welcome!").send()
 
 
-@cl.on_chat_resume
-async def resume(thread):
-    cl.user_session.set("conversation_id", thread["id"])
-    cl.Message(content="👍 Back where we left off!").send()
+# @cl.on_chat_resume
+# async def on_chat_resume(thread):
+#     cl.user_session.set("conversation_id", thread.id)
+#     return thread
 
 
 @cl.on_message
 async def handle_message(message: cl.Message):
+    data_layer = get_data_layer()
     user = cl.user_session.get("user")
     print(f"🟠 on_message: user = {user}")
 
     message.id = message.id or str(uuid.uuid4())
-    conversation_id = cl.user_session.get("conversation_id") or ""
+
+    conversation_id = cl.user_session.get("conversation_id")
+    if not conversation_id:
+        conversation_id = message.thread_id
+        cl.user_session.set("conversation_id", conversation_id)
+
     response_msg = cl.Message(content="")
 
-    app_user = cl.user_session.get("user")
-    print("🔐 Local user session:", cl.user_session.get("user"))
-    if app_user and not app_user.metadata.get("authorized", True):
+    if user and not user.metadata.get("authorized", True):
         await response_msg.stream_token(
             "Oops! It looks like you don’t have access to this service."
         )
         return
 
-    await response_msg.stream_token(" ")  # keep to initialize stream
+    await response_msg.stream_token(" ")  # initialize stream
 
     buffer = ""
     full_text = ""
@@ -254,14 +283,11 @@ async def handle_message(message: cl.Message):
     try:
         async for chunk in generator:
             chunk = chunk.strip()
-
-            # Handle multi-line "data:" entries from orchestrator
             parts = chunk.split("data:")
             for part in parts:
                 part = part.strip()
                 if not part:
                     continue
-
                 try:
                     parsed = json.loads(part)
                     cleaned_chunk = parsed.get("content", "")
@@ -294,7 +320,6 @@ async def handle_message(message: cl.Message):
                         pass
                     break
 
-                # flush safe portion
                 safe_flush_length = len(buffer) - len(TERMINATE_TOKEN)
                 if safe_flush_length > 0:
                     await response_msg.stream_token(buffer[:safe_flush_length])
@@ -303,7 +328,6 @@ async def handle_message(message: cl.Message):
     except Exception as e:
         logging.exception("[app] Error during message handling.")
         await response_msg.stream_token(f"⚠️ Error: {e}")
-
     finally:
         try:
             await generator.aclose()
@@ -311,11 +335,28 @@ async def handle_message(message: cl.Message):
             pass
 
     cl.user_session.set("conversation_id", conversation_id)
-
     full_text = full_text.replace(TERMINATE_TOKEN, "").strip()
-
+    await data_layer.append_message(
+        conversation_id,
+        {
+            "id": message.id,
+            "author": user.identifier if user else "anonymous",
+            "role": "user",
+            "content": message.content,
+        },
+    )
+    await data_layer.append_message(
+        conversation_id,
+        {
+            "id": str(uuid.uuid4()),
+            "author": "assistant",
+            "role": "assistant",
+            "content": full_text,
+        },
+    )
     message_list = cl.user_session.get("message_list") or []
     message_list.append({"question": message.content, "answer": full_text})
     cl.user_session.set("message_list", message_list)
+
     logging.info(f"[response message is]: {response_msg}")
     await response_msg.update()
