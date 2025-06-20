@@ -11,7 +11,9 @@ from azure.cosmos.exceptions import CosmosResourceNotFoundError
 from chainlit.data.base import BaseDataLayer
 from chainlit import User
 from chainlit.types import Pagination, PaginatedResponse, PageInfo, ThreadDict
-from pprint import pprint
+import pprint  # ensure pprint is available
+
+logging.getLogger().setLevel(logging.DEBUG)  # raise global log level for debugging
 
 _DB_NAME = "db0-wvvannyqg5e74"
 _CONTAINER_THREADS = "conversations"
@@ -179,17 +181,10 @@ class CosmosDataLayer(BaseDataLayer):
             return []
 
         raw_steps = doc.get("steps", [])
+        logging.info(pprint.pformat(raw_steps, compact=True, width=120))
         safe_steps = []
         for step in raw_steps:
-            # New fallback logic:
-            step_content = (
-                (step.get("content") or step.get("input") or step.get("output") or "")
-                .replace("TERMINATE", "")
-                .strip()
-            )
-            # Only append steps with actual content
-            if not step_content:
-                continue
+            # This logic ensures Chainlit sees content for both user and assistant
             safe_steps.append(
                 {
                     "id": step["id"],
@@ -198,8 +193,11 @@ class CosmosDataLayer(BaseDataLayer):
                     "type": step.get("type", "message"),
                     "input": step.get("input", ""),
                     "output": step.get("output", ""),
-                    # keep a `content` key for backward‑compat/UI fallback
-                    "content": step_content,
+                    "content": (
+                        step.get("input", "")
+                        if step["role"] == "user"
+                        else step.get("output", "")
+                    ),
                     "createdAt": step.get("createdAt"),
                     "updatedAt": step.get("updatedAt", step.get("createdAt")),
                 }
@@ -219,7 +217,7 @@ class CosmosDataLayer(BaseDataLayer):
         doc["steps"] = steps
 
         logging.info(f"🧵🟡 get_thread({thread_id}) loaded:")
-        pprint(doc)
+        logging.info(pprint.pformat(doc, compact=True, width=120))
         return doc
 
     async def append_message(self, thread_id: str, message: Dict[str, Any]):
@@ -243,7 +241,8 @@ class CosmosDataLayer(BaseDataLayer):
             "type": "message",
             # 👇  Chainlit expects these two keys
             "input": text if role == "user" else "",
-            "output": text if role != "user" else "",
+            # Always copy the visible content to `output` so the UI can render
+            "output": text,
             "createdAt": now,
             "updatedAt": now,
         }
@@ -329,3 +328,35 @@ class CosmosDataLayer(BaseDataLayer):
         except AttributeError:
             # older SDKs don’t expose __aexit__; fall back to sync close
             self._client.close()
+
+    async def get_message_history(self, thread_id: str) -> list[dict]:
+        cont = await self._get_threads()
+        try:
+            doc = await cont.read_item(item=thread_id, partition_key=thread_id)
+        except CosmosResourceNotFoundError:
+            return []
+
+        messages = doc.get("messages", [])
+        result = []
+
+        for msg in messages:
+            role = msg.get("role", "assistant")
+            input_text = msg.get("input", "")
+            output_text = msg.get("output", "")
+            content = output_text if role == "assistant" else input_text
+
+            result.append(
+                {
+                    "id": msg["id"],
+                    "role": role,
+                    "type": msg.get("type", "message"),
+                    "author": msg.get("author", {}),
+                    "input": input_text,
+                    "output": output_text,
+                    "content": content,
+                    "createdAt": msg.get("createdAt"),
+                    "updatedAt": msg.get("updatedAt", msg.get("createdAt")),
+                }
+            )
+
+        return result

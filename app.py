@@ -329,8 +329,8 @@ async def handle_message(message: cl.Message):
             await generator.aclose()
         except Exception:
             pass
-    full_text = full_text.replace(TERMINATE_TOKEN, "").strip()
-    now = _iso_now()
+    full_text = full_text.replace("TERMINATE_TOKEN", "").replace("\\n", "\n").strip()
+    # now = _iso_now()
     # Save assistant final response
     # await data_layer.append_message(
     #     conversation_id,
