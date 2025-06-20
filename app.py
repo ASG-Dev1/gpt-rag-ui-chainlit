@@ -4,7 +4,7 @@ import uuid
 import json
 import logging
 
-# Only show logs from your code at INFO level or higher
+
 logging.basicConfig(level=logging.INFO)
 
 # Quiet down SDKs
@@ -35,10 +35,6 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# my_secret = os.getenv("CHAINLIT_AUTH_SECRET")
-# print("CHAINLIT_AUTH_SECRET:", my_secret)
-# my_auth = os.getenv("CHAINLIT_AUTH")
-# print("CHAINLIT_AUTH:", my_auth)
 print("💥 Chainlit version =", cl.__version__)
 print("ENABLE_AUTH =", os.getenv("ENABLE_AUTH"))
 print("CHAINLIT_USERNAME =", os.getenv("CHAINLIT_USERNAME"))
@@ -228,7 +224,7 @@ async def login(username: str, password: str):
         try:
             await dl.ensure_user_exists(user.to_dict())
         finally:
-            await dl.aclose()  # 👈 closes CosmosClient correctly
+            await dl.aclose()
         return user
 
     return None
@@ -260,7 +256,7 @@ async def handle_message(message: cl.Message):
         )
         return
 
-    await response_msg.stream_token(" ")  # initialize stream
+    await response_msg.stream_token(" ")
 
     buffer = ""
     full_text = ""

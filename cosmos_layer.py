@@ -11,9 +11,9 @@ from azure.cosmos.exceptions import CosmosResourceNotFoundError
 from chainlit.data.base import BaseDataLayer
 from chainlit import User
 from chainlit.types import Pagination, PaginatedResponse, PageInfo, ThreadDict
-import pprint  # ensure pprint is available
+import pprint
 
-logging.getLogger().setLevel(logging.DEBUG)  # raise global log level for debugging
+logging.getLogger().setLevel(logging.DEBUG)
 
 _DB_NAME = "db0-wvvannyqg5e74"
 _CONTAINER_THREADS = "conversations"
@@ -211,9 +211,9 @@ class CosmosDataLayer(BaseDataLayer):
         try:
             doc = await cont.read_item(item=thread_id, partition_key=thread_id)
         except CosmosResourceNotFoundError:
-            return None  # ← CHANGE IS HERE: Do NOT create a new thread!
+            return None
         # **ALSO** fetch the steps that belong to this thread
-        steps = await self.list_steps(thread_id)  # implement this!
+        steps = await self.list_steps(thread_id)
         doc["steps"] = steps
 
         logging.info(f"🧵🟡 get_thread({thread_id}) loaded:")
@@ -247,9 +247,6 @@ class CosmosDataLayer(BaseDataLayer):
             "updatedAt": now,
         }
 
-        # Ensure both arrays exist
-        # doc.setdefault("messages", []).append(step)
-        # doc.setdefault("steps", []).append(step)
         doc["messages"] = doc.get("messages", []) + [step]
         doc["steps"] = doc.get("steps", []) + [step]
 
@@ -322,11 +319,9 @@ class CosmosDataLayer(BaseDataLayer):
     async def aclose(self):
         """Close the underlying async Cosmos client (called manually or by Chainlit)."""
         try:
-            await self._client.__aexit__(
-                None, None, None
-            )  # works because CosmosClient is an async-context-manager
+            await self._client.__aexit__(None, None, None)
         except AttributeError:
-            # older SDKs don’t expose __aexit__; fall back to sync close
+
             self._client.close()
 
     async def get_message_history(self, thread_id: str) -> list[dict]:
