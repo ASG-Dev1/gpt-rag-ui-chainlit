@@ -11,6 +11,7 @@ from azure.cosmos.exceptions import CosmosResourceNotFoundError
 from chainlit.data.base import BaseDataLayer
 from chainlit import User
 from chainlit.types import Pagination, PaginatedResponse, PageInfo, ThreadDict
+from pprint import pprint
 
 _DB_NAME = "db0-wvvannyqg5e74"
 _CONTAINER_THREADS = "conversations"
@@ -166,32 +167,46 @@ class CosmosDataLayer(BaseDataLayer):
             pageInfo=PageInfo(hasNextPage=False, startCursor=None, endCursor=None),
         )
 
-    async def list_steps(self, thread_id: str) -> list[Dict[str, Any]]:
+    def sanitize_content(content: str) -> str:
+        return content.replace("TERMINATE", "").strip(" \n!.")
+
+    async def list_steps(self, thread_id: str) -> list[dict]:
         cont = await self._get_threads()
         try:
             doc = await cont.read_item(item=thread_id, partition_key=thread_id)
         except CosmosResourceNotFoundError:
+            logging.warning("❌ Thread %s not found", thread_id)
             return []
 
-        steps = doc.get("messages", [])
-        logging.info(f"📨 Loaded {len(steps)} steps for thread {thread_id}")
+        raw_steps = doc.get("steps", [])
+        safe_steps = []
+        for step in raw_steps:
+            # New fallback logic:
+            step_content = (
+                (step.get("content") or step.get("input") or step.get("output") or "")
+                .replace("TERMINATE", "")
+                .strip()
+            )
+            # Only append steps with actual content
+            if not step_content:
+                continue
+            safe_steps.append(
+                {
+                    "id": step["id"],
+                    "author": step["author"],
+                    "role": step["role"],
+                    "type": step.get("type", "message"),
+                    "input": step.get("input", ""),
+                    "output": step.get("output", ""),
+                    # keep a `content` key for backward‑compat/UI fallback
+                    "content": step_content,
+                    "createdAt": step.get("createdAt"),
+                    "updatedAt": step.get("updatedAt", step.get("createdAt")),
+                }
+            )
 
-        return [
-            {
-                "id": step["id"],
-                "author": (
-                    step["author"].get("identifier", "unknown")
-                    if isinstance(step["author"], dict)
-                    else step["author"]
-                ),
-                "content": step["content"],
-                "createdAt": step.get("createdAt"),
-                "updatedAt": step.get("updatedAt", step.get("createdAt")),
-                "type": "message",
-                "role": step["role"],
-            }
-            for step in steps
-        ]
+        logging.info("📨 Loaded %d steps for thread %s", len(safe_steps), thread_id)
+        return safe_steps
 
     async def get_thread(self, thread_id: str) -> ThreadDict | None:
         cont = await self._get_threads()
@@ -203,27 +218,49 @@ class CosmosDataLayer(BaseDataLayer):
         steps = await self.list_steps(thread_id)  # implement this!
         doc["steps"] = steps
 
+        logging.info(f"🧵🟡 get_thread({thread_id}) loaded:")
+        pprint(doc)
         return doc
 
     async def append_message(self, thread_id: str, message: Dict[str, Any]):
         cont = await self._get_threads()
         doc = await cont.read_item(item=thread_id, partition_key=thread_id)
 
-        doc.setdefault("messages", []).append(
-            {
-                "id": message.get("id", str(uuid.uuid4())),
-                "role": message.get("role", "user"),
-                "author": {"identifier": message.get("author", "user")},
-                "content": message.get("content", ""),
-                "type": "message",  # ✅ Required by Chainlit
-                "createdAt": _iso_now(),
-            }
-        )
-        doc["updatedAt"] = _iso_now()
+        author = message.get("author")
+        if isinstance(author, dict):
+            safe_author = author  # assume already in right shape
+        else:
+            safe_author = {"identifier": str(author)}
+
+        now = _iso_now()
+        role = message.get("role", "user")
+        text = message.get("content", "")
+
+        step = {
+            "id": message.get("id", str(uuid.uuid4())),
+            "role": role,
+            "author": safe_author,
+            "type": "message",
+            # 👇  Chainlit expects these two keys
+            "input": text if role == "user" else "",
+            "output": text if role != "user" else "",
+            "createdAt": now,
+            "updatedAt": now,
+        }
+
+        # Ensure both arrays exist
+        # doc.setdefault("messages", []).append(step)
+        # doc.setdefault("steps", []).append(step)
+        doc["messages"] = doc.get("messages", []) + [step]
+        doc["steps"] = doc.get("steps", []) + [step]
+
+        doc["updatedAt"] = now
 
         await cont.replace_item(
             item=doc["id"], body=doc, request_options={"partitionKey": doc["id"]}
         )
+        logging.info(f"💾 Appending message to thread {thread_id}:")
+        pprint(step)
 
     async def update_thread(self, thread_id: str, **kwargs):
         cont = await self._get_threads()
@@ -282,3 +319,13 @@ class CosmosDataLayer(BaseDataLayer):
             f"https://portal.azure.com/#view/Microsoft_Azure_CosmosDB/"
             f"DatabaseId/{self._db_name}/containerId/{self._threads_id}/itemId/{thread_id}"
         )
+
+    async def aclose(self):
+        """Close the underlying async Cosmos client (called manually or by Chainlit)."""
+        try:
+            await self._client.__aexit__(
+                None, None, None
+            )  # works because CosmosClient is an async-context-manager
+        except AttributeError:
+            # older SDKs don’t expose __aexit__; fall back to sync close
+            self._client.close()

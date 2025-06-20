@@ -190,12 +190,6 @@ USERS = {"admin": "1234", "james": "0000", "csaez": "0404"}
 
 
 @cl.password_auth_callback
-def login(username: str, password: str):
-    import asyncio
-    from cosmos_layer import CosmosDataLayer
-
-
-@cl.password_auth_callback
 async def login(username: str, password: str):
     from cosmos_layer import CosmosDataLayer
 
@@ -247,6 +241,7 @@ async def on_chat_start():
 
 # @cl.on_chat_resume
 # async def on_chat_resume(thread):
+#     print(f"🟠 CHAT RESUME ACTIVATED = {thread}")
 #     cl.user_session.set("conversation_id", thread.id)
 #     return thread
 
@@ -330,30 +325,39 @@ async def handle_message(message: cl.Message):
         await response_msg.stream_token(f"⚠️ Error: {e}")
     finally:
         try:
+
             await generator.aclose()
         except Exception:
             pass
-
-    cl.user_session.set("conversation_id", conversation_id)
     full_text = full_text.replace(TERMINATE_TOKEN, "").strip()
-    await data_layer.append_message(
-        conversation_id,
-        {
-            "id": message.id,
-            "author": user.identifier if user else "anonymous",
-            "role": "user",
-            "content": message.content,
-        },
-    )
-    await data_layer.append_message(
-        conversation_id,
-        {
-            "id": str(uuid.uuid4()),
-            "author": "assistant",
-            "role": "assistant",
-            "content": full_text,
-        },
-    )
+    now = _iso_now()
+    # Save assistant final response
+    # await data_layer.append_message(
+    #     conversation_id,
+    #     {
+    #         "id": message.id,
+    #         "role": "user",
+    #         "author": {"identifier": user.identifier if user else "anonymous"},
+    #         "content": message.content,
+    #         "type": "message",
+    #         "createdAt": now,
+    #         "updatedAt": now,
+    #     },
+    # )
+
+    # await data_layer.append_message(
+    #     conversation_id,
+    #     {
+    #         "id": str(uuid.uuid4()),
+    #         "role": "assistant",
+    #         "author": {"identifier": "assistant"},
+    #         "content": full_text,
+    #         "type": "message",
+    #         "createdAt": now,
+    #         "updatedAt": now,
+    #     },
+    # )
+
     message_list = cl.user_session.get("message_list") or []
     message_list.append({"question": message.content, "answer": full_text})
     cl.user_session.set("message_list", message_list)
