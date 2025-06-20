@@ -239,13 +239,6 @@ async def on_chat_start():
     await cl.Message(content="Welcome!").send()
 
 
-# @cl.on_chat_resume
-# async def on_chat_resume(thread):
-#     print(f"🟠 CHAT RESUME ACTIVATED = {thread}")
-#     cl.user_session.set("conversation_id", thread.id)
-#     return thread
-
-
 @cl.on_message
 async def handle_message(message: cl.Message):
     data_layer = get_data_layer()
@@ -329,34 +322,8 @@ async def handle_message(message: cl.Message):
             await generator.aclose()
         except Exception:
             pass
-    full_text = full_text.replace("TERMINATE_TOKEN", "").replace("\\n", "\n").strip()
-    # now = _iso_now()
-    # Save assistant final response
-    # await data_layer.append_message(
-    #     conversation_id,
-    #     {
-    #         "id": message.id,
-    #         "role": "user",
-    #         "author": {"identifier": user.identifier if user else "anonymous"},
-    #         "content": message.content,
-    #         "type": "message",
-    #         "createdAt": now,
-    #         "updatedAt": now,
-    #     },
-    # )
-
-    # await data_layer.append_message(
-    #     conversation_id,
-    #     {
-    #         "id": str(uuid.uuid4()),
-    #         "role": "assistant",
-    #         "author": {"identifier": "assistant"},
-    #         "content": full_text,
-    #         "type": "message",
-    #         "createdAt": now,
-    #         "updatedAt": now,
-    #     },
-    # )
+    full_text = full_text.replace(TERMINATE_TOKEN, "").replace("\\n", "\n")
+    full_text = re.sub(r"(?<=[a-zA-Z])(?=[A-Z])", " ", full_text)
 
     message_list = cl.user_session.get("message_list") or []
     message_list.append({"question": message.content, "answer": full_text})
