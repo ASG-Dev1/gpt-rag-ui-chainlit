@@ -230,8 +230,16 @@ async def login(username: str, password: str):
     return None
 
 
-@cl.on_chat_start
+# @cl.on_chat_start
 async def on_chat_start():
+    data_layer = get_data_layer()
+    user = cl.user_session.get("user")
+
+    # Explicitly create a new thread early - Helps conversation thread appear on sidebar without refreshing the page.
+    if user:
+        thread_id = await data_layer.create_thread(user.identifier)
+        cl.user_session.set("conversation_id", thread_id)
+
     await cl.Message(content="Welcome!").send()
 
 
