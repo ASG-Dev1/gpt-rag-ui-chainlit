@@ -249,14 +249,12 @@ async def handle_message(message: cl.Message):
         cl.user_session.set("conversation_id", conversation_id)
 
     response_msg = cl.Message(content="")
-
+    await response_msg.send()
     if user and not user.metadata.get("authorized", True):
         await response_msg.stream_token(
             "Oops! It looks like you don’t have access to this service."
         )
         return
-
-    await response_msg.stream_token(" ")
 
     buffer = ""
     full_text = ""
@@ -326,4 +324,5 @@ async def handle_message(message: cl.Message):
     cl.user_session.set("message_list", message_list)
 
     logging.info(f"[response message is]: {response_msg}")
-    await response_msg.update()
+    # await response_msg.update()
+    await response_msg.update(full_text)

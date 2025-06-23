@@ -258,6 +258,28 @@ class CosmosDataLayer(BaseDataLayer):
         logging.info(f"💾 Appending message to thread {thread_id}:")
         pprint(step)
 
+    async def update_step(self, thread_id: str, step_dict: dict):
+        # Place this in cosmos_layer.py, inside CosmosDataLayer
+        cont = await self._get_threads()
+        doc = await cont.read_item(item=thread_id, partition_key=thread_id)
+        # logging.info(
+        #     f"[DataLayer:update_step] thread={thread_id} step_id={step_dict['id']} content={step_dict.get('content')!r}"
+        # )
+        # find the index of the step being updated
+        for i, st in enumerate(doc.get("steps", [])):
+            if st["id"] == step_dict["id"]:
+                # merge new fields (content) over the old
+                doc["steps"][i].update(step_dict)
+                break
+        else:
+            # if no matching step id, just append
+            doc["steps"].append(step_dict)
+
+        doc["updatedAt"] = _iso_now()
+        await cont.replace_item(
+            item=doc["id"], body=doc, request_options={"partitionKey": doc["id"]}
+        )
+
     async def update_thread(self, thread_id: str, **kwargs):
         cont = await self._get_threads()
         try:
@@ -300,9 +322,6 @@ class CosmosDataLayer(BaseDataLayer):
         pass
 
     async def create_step(self, *a, **kw):
-        pass
-
-    async def update_step(self, *a, **kw):
         pass
 
     async def delete_step(self, *a, **kw):

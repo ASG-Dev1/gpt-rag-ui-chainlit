@@ -90,7 +90,7 @@ async def oauth_callback(
     refresh_token = result.get("refresh_token")
     id_token = result.get("id_token_claims", {})
 
-    user_id = id_token.get("oid", "00000000-0000-0000-0000-000000000000")
+    user_id = id_token.get("user_id", "00000000-0000-0000-0000-00000000000")  # oid
     user_name = id_token.get("name", "anonymous")
     principal_name = id_token.get("preferred_username", "")
 
