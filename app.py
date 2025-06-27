@@ -274,9 +274,15 @@ async def handle_message(message: cl.Message):
         async for chunk in generator:
             chunk = chunk.strip()
             parts = chunk.split("data:")
+            # for part in parts:
+            #     part = part.strip()
+            #     if not part:
+            #         continue
+            #     try:
+            #         parsed = json.loads(part)
             for part in parts:
                 part = part.strip()
-                if not part:
+                if not part or part.lower() in {"heartbeat", "ping"}:
                     continue
                 try:
                     parsed = json.loads(part)
@@ -333,4 +339,7 @@ async def handle_message(message: cl.Message):
 
     logging.info(f"[response message is]: {response_msg}")
     # await response_msg.update()
-    await response_msg.update(full_text)
+    # await response_msg.update(full_text)
+
+    response_msg.content = full_text
+    await response_msg.update()
