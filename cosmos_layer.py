@@ -12,6 +12,7 @@ from chainlit.data.base import BaseDataLayer
 from chainlit import User
 from chainlit.types import Pagination, PaginatedResponse, PageInfo, ThreadDict
 import pprint
+import json
 
 logging.getLogger().setLevel(logging.DEBUG)
 
@@ -207,6 +208,7 @@ class CosmosDataLayer(BaseDataLayer):
         return safe_steps
 
     async def get_thread(self, thread_id: str) -> ThreadDict | None:
+        logging.info(f"📥 get_thread() called with id: {thread_id}")
         cont = await self._get_threads()
         try:
             doc = await cont.read_item(item=thread_id, partition_key=thread_id)
@@ -214,11 +216,28 @@ class CosmosDataLayer(BaseDataLayer):
             return None
         # **ALSO** fetch the steps that belong to this thread
         steps = await self.list_steps(thread_id)
-        doc["steps"] = steps
+        # doc["steps"] = steps
 
         logging.info(f"🧵🟡 get_thread({thread_id}) loaded:")
         logging.info(pprint.pformat(doc, compact=True, width=120))
-        return doc
+        # ✅ Ensure every step has a thread_id
+        for step in steps:
+            step["thread_id"] = thread_id
+        # return doc
+        # ✅ Construct sanitized dictionary
+        thread_data = {
+            "id": doc["id"],
+            "name": doc.get("name", "Untitled"),
+            "summary": doc.get("summary", ""),
+            "createdAt": doc.get("createdAt"),
+            "updatedAt": doc.get("updatedAt"),
+            "steps": steps,
+        }
+
+        logging.info(
+            f"🔁 get_thread sanitized return: {json.dumps(thread_data, indent=2)}"
+        )
+        return thread_data
 
     async def append_message(self, thread_id: str, message: Dict[str, Any]):
         cont = await self._get_threads()

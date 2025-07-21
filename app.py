@@ -243,6 +243,12 @@ async def on_chat_start():
     await cl.Message(content="Welcome!").send()
 
 
+@cl.on_chat_resume
+async def on_chat_resume(thread):
+    print(f"📦 on_chat_resume received thread: {thread['id']}")
+    cl.user_session.set("conversation_id", thread["id"])
+
+
 @cl.on_message
 async def handle_message(message: cl.Message):
     data_layer = get_data_layer()
@@ -251,13 +257,37 @@ async def handle_message(message: cl.Message):
 
     message.id = message.id or str(uuid.uuid4())
 
-    conversation_id = cl.user_session.get("conversation_id")
+    # conversation_id = cl.user_session.get("conversation_id")
+    # if not conversation_id:
+    #     conversation_id = message.thread_id
+    #     cl.user_session.set("conversation_id", conversation_id)
+
+    # response_msg = cl.Message(content="")
+    # await response_msg.send()
+    # if user and not user.metadata.get("authorized", True):
+    #     await response_msg.stream_token(
+    #         "Oops! It looks like you don’t have access to this service."
+    #     )
+    #     return
+
+    # ✅ Use thread_id directly from message (supports resumed threads)
+    conversation_id = message.thread_id or cl.user_session.get("conversation_id")
+
+    print(f"📨 Handling message for thread: {conversation_id}")
+
     if not conversation_id:
-        conversation_id = message.thread_id
+        # New conversation — create one manually
+        conversation_id = await data_layer.create_thread(user.identifier)
         cl.user_session.set("conversation_id", conversation_id)
 
+    message.thread_id = conversation_id
+    cl.user_session.set("conversation_id", conversation_id)
+
+    # ✅ Set thread_id in response message too
+    # response_msg = cl.Message(content="", thread_id=conversation_id)
     response_msg = cl.Message(content="")
     await response_msg.send()
+
     if user and not user.metadata.get("authorized", True):
         await response_msg.stream_token(
             "Oops! It looks like you don’t have access to this service."
