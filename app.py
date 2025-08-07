@@ -111,6 +111,7 @@ def replace_source_reference_links(text: str) -> str:
 
 
 def check_authorization() -> dict:
+
     app_user = cl.user_session.get("user")
     result = {
         "authorized": True,
@@ -164,19 +165,19 @@ async def chat_profiles():
         cl.ChatProfile(
             name="ASGPT",
             icon="favicon",
-            id="rag",
+            id="rag2",
             markdown_description="Main assistant profile for ASGPT answers",
         ),
         cl.ChatProfile(
             name="GPT-RAG",
             icon="🧠",
-            id="rag",
+            id="rag3",
             markdown_description="Main assistant profile for GPT-RAG answers",
         ),
         cl.ChatProfile(
             name="Legal GPT",
             icon="🧠",
-            id="rag",
+            id="rag4",
             markdown_description="Main assistant profile for Legal GPT answers",
         ),
     ]
@@ -185,9 +186,54 @@ async def chat_profiles():
 USERS = {"admin": "1234", "james": "0000", "csaez": "0404"}
 
 
+# @cl.password_auth_callback
+# async def login(username: str, password: str):
+#     print(f"🔐 login() called for {username}")
+#     from cosmos_layer import CosmosDataLayer
+
+#     class SimpleUser:
+#         def __init__(self, identifier):
+#             self.identifier = identifier
+#             self.id = identifier
+#             self.name = identifier
+#             self.email = f"{identifier}@example.com"
+#             self.metadata = {
+#                 "email": self.email,
+#                 "client_principal_id": identifier,
+#                 "client_principal_name": identifier,
+#                 "name": identifier,
+#                 "authorized": True,
+#                 "chat_profile": "rag",
+#             }
+
+#         def to_dict(self):
+#             return {
+#                 "identifier": self.identifier,
+#                 "name": self.name,
+#                 "email": self.email,
+#                 "metadata": self.metadata,
+#             }
+
+#     if USERS.get(username) == password:
+#         user = SimpleUser(username)
+#         dl = CosmosDataLayer(
+#             endpoint=os.getenv("COSMOS_DB_URI"),
+#             key=os.getenv("COSMOS_DB_KEY"),
+#             database_name=os.getenv("AZURE_DB_ID", "db0-wvvannyqg5e74"),
+#             container_threads=os.getenv("AZURE_CONTAINER_NAME", "conversations"),
+#             container_users=os.getenv("AZURE_USER_CONTAINER", "users"),
+#         )
+#         try:
+#             await dl.ensure_user_exists(user.to_dict())
+#         finally:
+#             await dl.aclose()
+#         return user
+
+
+#     return None
 @cl.password_auth_callback
 async def login(username: str, password: str):
-    from cosmos_layer import CosmosDataLayer
+    print(f"🔐 login() called for {username}")
 
     class SimpleUser:
         def __init__(self, identifier):
@@ -231,22 +277,85 @@ async def login(username: str, password: str):
 
 
 # @cl.on_chat_start
+# async def on_chat_start():
+#     print("🟢 on_chat_start called")
+
+
+#     await cl.Message(content="Welcome!").send()
+# @cl.on_chat_start
+# async def on_chat_start():
+#     user = cl.user_session.get("user")
+# profile = user.metadata.get("chat_profile", "unknown")
+# Only show this for new chats, not for resume
+# await cl.Message(content=f"Main assistant profile for **{profile}** answers").send()
+@cl.on_chat_start
 async def on_chat_start():
-    data_layer = get_data_layer()
     user = cl.user_session.get("user")
+    if user and not getattr(user, "metadata", None):
+        # Reconstruct and restore metadata if missing
+        # (only necessary if it was returned from login() but not persisted)
+        restored_metadata = {
+            "email": f"{user.identifier}@example.com",
+            "client_principal_id": user.identifier,
+            "client_principal_name": user.identifier,
+            "name": user.identifier,
+            "authorized": True,
+            "chat_profile": "rag",
+        }
+        user.metadata = restored_metadata
+        cl.user_session.set("user", user)  # ✅ Safe to call here
 
-    # Explicitly create a new thread early - Helps conversation thread appear on sidebar without refreshing the page.
-    if user:
-        thread_id = await data_layer.create_thread(user.identifier)
-        cl.user_session.set("conversation_id", thread_id)
-
-    await cl.Message(content="Welcome!").send()
+    print("🟢 on_chat_start called")
+    print("🧾 user from session:", user)
+    print("🧾 user.metadata:", getattr(user, "metadata", {}))
 
 
 @cl.on_chat_resume
 async def on_chat_resume(thread):
-    print(f"📦 on_chat_resume received thread: {thread['id']}")
     cl.user_session.set("conversation_id", thread["id"])
+
+    # 👇 Show status
+    await cl.Message(content="🔁 Restoring session...").send()
+
+    data_layer = get_data_layer()
+    thread_data = await data_layer.get_thread(thread["id"])
+
+    if not thread_data or thread_data.get("id") != thread["id"]:
+        logging.warning(
+            f"[on_chat_resume] Thread not found or mismatch: {thread['id']}"
+        )
+        await cl.Message(content="⚠️ This thread no longer exists.").send()
+        return
+
+    steps = await data_layer.list_steps(thread["id"])
+    logging.info(f"[on_chat_resume] Loaded {len(steps)} steps")
+
+    non_messages = [s for s in steps if s.get("type") != "message"]
+    logging.info(f"[on_chat_resume] Skipping {len(non_messages)} non-message steps")
+
+    # 👇 Send messages one-by-one with debug log
+    rendered = 0
+    for step in steps:
+        if step.get("type") != "message":
+            continue
+
+        role = step.get("role", "assistant")
+        content = step.get("output" if role == "assistant" else "input", "")
+        if not content:
+            continue
+
+        msg = cl.Message(
+            content=content,
+            author=step["author"]["identifier"],
+            thread_id=thread["id"],
+        )
+        await msg.send()
+        logging.info(
+            f"[on_chat_resume] Sent message from {msg.author}: {msg.content[:60]}"
+        )
+        rendered += 1
+
+    logging.info(f"[on_chat_resume] Rendered total: {rendered}")
 
 
 @cl.on_message
@@ -257,34 +366,18 @@ async def handle_message(message: cl.Message):
 
     message.id = message.id or str(uuid.uuid4())
 
-    # conversation_id = cl.user_session.get("conversation_id")
-    # if not conversation_id:
-    #     conversation_id = message.thread_id
-    #     cl.user_session.set("conversation_id", conversation_id)
-
-    # response_msg = cl.Message(content="")
-    # await response_msg.send()
-    # if user and not user.metadata.get("authorized", True):
-    #     await response_msg.stream_token(
-    #         "Oops! It looks like you don’t have access to this service."
-    #     )
-    #     return
-
-    # ✅ Use thread_id directly from message (supports resumed threads)
     conversation_id = message.thread_id or cl.user_session.get("conversation_id")
 
     print(f"📨 Handling message for thread: {conversation_id}")
 
     if not conversation_id:
-        # New conversation — create one manually
+
         conversation_id = await data_layer.create_thread(user.identifier)
         cl.user_session.set("conversation_id", conversation_id)
 
     message.thread_id = conversation_id
     cl.user_session.set("conversation_id", conversation_id)
 
-    # ✅ Set thread_id in response message too
-    # response_msg = cl.Message(content="", thread_id=conversation_id)
     response_msg = cl.Message(content="")
     await response_msg.send()
 
@@ -304,12 +397,7 @@ async def handle_message(message: cl.Message):
         async for chunk in generator:
             chunk = chunk.strip()
             parts = chunk.split("data:")
-            # for part in parts:
-            #     part = part.strip()
-            #     if not part:
-            #         continue
-            #     try:
-            #         parsed = json.loads(part)
+
             for part in parts:
                 part = part.strip()
                 if not part or part.lower() in {"heartbeat", "ping"}:
@@ -355,11 +443,13 @@ async def handle_message(message: cl.Message):
         logging.exception("[app] Error during message handling.")
         await response_msg.stream_token(f"⚠️ Error: {e}")
     finally:
+        await data_layer.aclose()
         try:
 
             await generator.aclose()
         except Exception:
             pass
+
     full_text = full_text.replace(TERMINATE_TOKEN, "").replace("\\n", "\n")
     full_text = re.sub(r"(?<=[a-zA-Z])(?=[A-Z])", " ", full_text)
 
@@ -368,8 +458,15 @@ async def handle_message(message: cl.Message):
     cl.user_session.set("message_list", message_list)
 
     logging.info(f"[response message is]: {response_msg}")
-    # await response_msg.update()
-    # await response_msg.update(full_text)
 
     response_msg.content = full_text
     await response_msg.update()
+    if full_text and message.content:
+        await data_layer.update_thread(
+            conversation_id,
+            name=message.content[:60],
+            summary=message.content[:60],
+        )
+
+        # ✅ No refresh_threads in current Chainlit version
+        logging.info("🧵 Thread title updated. Will appear after sidebar refresh.")

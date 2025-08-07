@@ -15,7 +15,7 @@ import pprint
 import json
 
 logging.getLogger().setLevel(logging.DEBUG)
-
+logging.getLogger("azure.identity").setLevel(logging.ERROR)
 _DB_NAME = "db0-wvvannyqg5e74"
 _CONTAINER_THREADS = "conversations"
 _CONTAINER_USERS = "users"
@@ -188,19 +188,22 @@ class CosmosDataLayer(BaseDataLayer):
             # This logic ensures Chainlit sees content for both user and assistant
             safe_steps.append(
                 {
-                    "id": step["id"],
-                    "author": step["author"],
-                    "role": step["role"],
+                    "id": step.get("id", str(uuid.uuid4())),
+                    "author": step.get("author", {"identifier": "unknown"}),
+                    "role": step.get("role", "assistant"),
                     "type": step.get("type", "message"),
                     "input": step.get("input", ""),
                     "output": step.get("output", ""),
                     "content": (
                         step.get("input", "")
-                        if step["role"] == "user"
+                        if step.get("role", "assistant") == "user"
                         else step.get("output", "")
                     ),
-                    "createdAt": step.get("createdAt"),
-                    "updatedAt": step.get("updatedAt", step.get("createdAt")),
+                    "createdAt": step.get("createdAt", _iso_now()),
+                    "updatedAt": step.get(
+                        "updatedAt", step.get("createdAt", _iso_now())
+                    ),
+                    "thread_id": thread_id,  # Ensure every step has a thread_id
                 }
             )
 
@@ -232,8 +235,10 @@ class CosmosDataLayer(BaseDataLayer):
             "createdAt": doc.get("createdAt"),
             "updatedAt": doc.get("updatedAt"),
             "steps": steps,
+            "user_id": doc.get("user_id"),  # required for sidebar edit/delete
         }
 
+        logging.info(f"🔁 get_thread returning thread_id: {thread_data['id']}")
         logging.info(
             f"🔁 get_thread sanitized return: {json.dumps(thread_data, indent=2)}"
         )
@@ -277,21 +282,38 @@ class CosmosDataLayer(BaseDataLayer):
         logging.info(f"💾 Appending message to thread {thread_id}:")
         pprint(step)
 
-    async def update_step(self, thread_id: str, step_dict: dict):
-        # Place this in cosmos_layer.py, inside CosmosDataLayer
-        cont = await self._get_threads()
-        doc = await cont.read_item(item=thread_id, partition_key=thread_id)
-        # logging.info(
-        #     f"[DataLayer:update_step] thread={thread_id} step_id={step_dict['id']} content={step_dict.get('content')!r}"
-        # )
-        # find the index of the step being updated
+    async def update_step(self, thread_id=None, step_dict=None):
+        # Handle Chainlit calling update_step(step_dict)
+        if isinstance(thread_id, dict) and step_dict is None:
+            step_dict = thread_id
+            thread_id = step_dict.get("threadId", "unknown")
+
+        if step_dict is None:
+            logging.warning(
+                f"update_step called without step_dict (thread_id={thread_id})"
+            )
+            return
+
+        try:
+            cont = await self._get_threads()
+            doc = await cont.read_item(item=thread_id, partition_key=thread_id)
+        except CosmosResourceNotFoundError:
+            logging.warning(
+                f"[update_step] Skipping: Thread {thread_id} does not exist yet."
+            )
+            return
+        except Exception as e:
+            logging.exception(
+                f"[update_step] Unexpected error for thread {thread_id}: {e}"
+            )
+            return
+
+        # Proceed with update
         for i, st in enumerate(doc.get("steps", [])):
             if st["id"] == step_dict["id"]:
-                # merge new fields (content) over the old
                 doc["steps"][i].update(step_dict)
                 break
         else:
-            # if no matching step id, just append
             doc["steps"].append(step_dict)
 
         doc["updatedAt"] = _iso_now()

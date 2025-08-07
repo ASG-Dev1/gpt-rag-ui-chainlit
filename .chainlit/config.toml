@@ -82,7 +82,7 @@ edit_message = true
 name = "GPT-RAG"
 
 # default_theme = "dark"
-default_theme = "light"
+default_theme = "dark"
 
 default_sidebar = "chat_history"
 
