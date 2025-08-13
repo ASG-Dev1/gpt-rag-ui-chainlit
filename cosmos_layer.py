@@ -10,7 +10,8 @@ from azure.cosmos import PartitionKey
 from azure.cosmos.exceptions import CosmosResourceNotFoundError
 from chainlit.data.base import BaseDataLayer
 from chainlit import User
-from chainlit.types import Pagination, PaginatedResponse, PageInfo, ThreadDict
+from chainlit.types import Pagination, PaginatedResponse, PageInfo, ThreadDict, Feedback
+from chainlit.element import Element
 import pprint
 import json
 
@@ -346,27 +347,134 @@ class CosmosDataLayer(BaseDataLayer):
         doc = await self.get_thread(thread_id)
         return doc.get("user_id") if doc else None
 
-    # stubs for feedback / steps / elements …
-    async def upsert_feedback(self, *a, **kw):
-        pass
+    # ────────────────────────  FEEDBACK  ─────────────────────────────────
+    async def upsert_feedback(self, feedback: Feedback) -> str:
+        """Create or update feedback attached to a step."""
+        if not feedback.threadId:
+            return ""
 
-    async def delete_feedback(self, *a, **kw):
-        pass
+        cont = await self._get_threads()
+        doc = await cont.read_item(item=feedback.threadId, partition_key=feedback.threadId)
 
-    async def create_element(self, *a, **kw):
-        pass
+        fb_id = feedback.id or str(uuid.uuid4())
+        fb_dict = {
+            "id": fb_id,
+            "forId": feedback.forId,
+            "value": feedback.value,
+            "comment": feedback.comment,
+            "createdAt": _iso_now(),
+            "updatedAt": _iso_now(),
+        }
 
-    async def get_element(self, *a, **kw):
+        feedbacks = doc.get("feedbacks", [])
+        for i, existing in enumerate(feedbacks):
+            if existing["id"] == fb_id:
+                feedbacks[i] = fb_dict
+                break
+        else:
+            feedbacks.append(fb_dict)
+        doc["feedbacks"] = feedbacks
+        doc["updatedAt"] = _iso_now()
+
+        await cont.replace_item(item=doc["id"], body=doc, request_options={"partitionKey": doc["id"]})
+        return fb_id
+
+    async def delete_feedback(self, feedback_id: str) -> bool:
+        cont = await self._get_threads()
+        query = (
+            "SELECT c.id FROM c JOIN f IN c.feedbacks WHERE f.id = @fid"
+        )
+        params = [{"name": "@fid", "value": feedback_id}]
+
+        thread_id = None
+        items = cont.query_items(query=query, parameters=params)
+        async for it in items:
+            thread_id = it["id"]
+            break
+
+        if not thread_id:
+            return False
+
+        doc = await cont.read_item(item=thread_id, partition_key=thread_id)
+        before = len(doc.get("feedbacks", []))
+        doc["feedbacks"] = [f for f in doc.get("feedbacks", []) if f.get("id") != feedback_id]
+        doc["updatedAt"] = _iso_now()
+        await cont.replace_item(item=doc["id"], body=doc, request_options={"partitionKey": doc["id"]})
+        return before != len(doc.get("feedbacks", []))
+
+    # ────────────────────────  ELEMENTS  ─────────────────────────────────
+    async def create_element(self, element: Element):
+        cont = await self._get_threads()
+        thread_id = element.thread_id
+        doc = await cont.read_item(item=thread_id, partition_key=thread_id)
+        el_dict = element.to_dict()
+        elements = doc.get("elements", [])
+        elements.append(el_dict)
+        doc["elements"] = elements
+        doc["updatedAt"] = _iso_now()
+        await cont.replace_item(item=doc["id"], body=doc, request_options={"partitionKey": doc["id"]})
+
+    async def get_element(self, thread_id: str, element_id: str) -> Optional[Dict[str, Any]]:
+        cont = await self._get_threads()
+        try:
+            doc = await cont.read_item(item=thread_id, partition_key=thread_id)
+        except CosmosResourceNotFoundError:
+            return None
+        for el in doc.get("elements", []):
+            if el.get("id") == element_id:
+                return el
         return None
 
-    async def delete_element(self, *a, **kw):
-        pass
+    async def delete_element(self, element_id: str, thread_id: Optional[str] = None):
+        cont = await self._get_threads()
+        if not thread_id:
+            query = "SELECT c.id FROM c JOIN e IN c.elements WHERE e.id = @eid"
+            params = [{"name": "@eid", "value": element_id}]
+            items = cont.query_items(query=query, parameters=params)
+            async for it in items:
+                thread_id = it["id"]
+                break
+            if not thread_id:
+                return
 
-    async def create_step(self, *a, **kw):
-        pass
+        doc = await cont.read_item(item=thread_id, partition_key=thread_id)
+        doc["elements"] = [e for e in doc.get("elements", []) if e.get("id") != element_id]
+        doc["updatedAt"] = _iso_now()
+        await cont.replace_item(item=doc["id"], body=doc, request_options={"partitionKey": doc["id"]})
 
-    async def delete_step(self, *a, **kw):
-        pass
+    # ───────────────────────────  STEPS  ──────────────────────────────────
+    async def create_step(self, step_dict: Dict[str, Any]):
+        thread_id = step_dict.get("threadId")
+        if not thread_id:
+            return
+        cont = await self._get_threads()
+        doc = await cont.read_item(item=thread_id, partition_key=thread_id)
+        step_dict.setdefault("createdAt", _iso_now())
+        step_dict.setdefault("updatedAt", step_dict["createdAt"])
+        steps = doc.get("steps", [])
+        steps.append(step_dict)
+        doc["steps"] = steps
+        if step_dict.get("type") == "message":
+            doc.setdefault("messages", []).append(step_dict)
+        doc["updatedAt"] = _iso_now()
+        await cont.replace_item(item=doc["id"], body=doc, request_options={"partitionKey": doc["id"]})
+
+    async def delete_step(self, step_id: str):
+        cont = await self._get_threads()
+        query = "SELECT c.id FROM c JOIN s IN c.steps WHERE s.id = @sid"
+        params = [{"name": "@sid", "value": step_id}]
+        items = cont.query_items(query=query, parameters=params)
+        thread_id = None
+        async for it in items:
+            thread_id = it["id"]
+            break
+        if not thread_id:
+            return
+        doc = await cont.read_item(item=thread_id, partition_key=thread_id)
+        doc["steps"] = [s for s in doc.get("steps", []) if s.get("id") != step_id]
+        doc["messages"] = [m for m in doc.get("messages", []) if m.get("id") != step_id]
+        doc["updatedAt"] = _iso_now()
+        await cont.replace_item(item=doc["id"], body=doc, request_options={"partitionKey": doc["id"]})
 
     async def build_debug_url(self, thread_id: str | None = None) -> str | None:
         if not thread_id:
