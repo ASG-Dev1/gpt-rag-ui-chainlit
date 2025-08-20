@@ -25,7 +25,10 @@ from datetime import datetime, timezone
 from chainlit import Text, ElementSidebar
 from chainlit.data import BaseDataLayer
 from orchestrator_client import call_orchestrator_stream
-from cosmos_layer import CosmosDataLayer
+
+# from cosmos_layer import CosmosDataLayer
+
+from postgres_layer import PostgresDataLayer
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -38,17 +41,26 @@ def _iso_now() -> str:
 print("💥 Chainlit version =", cl.__version__)
 print("ENABLE_AUTH =", os.getenv("ENABLE_AUTH"))
 print("CHAINLIT_USERNAME =", os.getenv("CHAINLIT_USERNAME"))
+import os
+
+# print("ORCHESTRATOR_STREAM_ENDPOINT =", os.getenv("ORCHESTRATOR_STREAM_ENDPOINT"))
+
+
+# @cl.data_layer
+# def get_data_layer():
+#     return CosmosDataLayer(
+#         endpoint=os.getenv("COSMOS_DB_URI") or cl.config.cosmosdb.uri,
+#         key=os.getenv("COSMOS_DB_KEY") or cl.config.cosmosdb.key,
+#         database_name=os.getenv("AZURE_DB_ID", "db0-wvvannyqg5e74"),
+#         container_threads=os.getenv("AZURE_CONTAINER_NAME", "conversations"),
+#         container_users=os.getenv("AZURE_USER_CONTAINER", "users"),
+#     )
 
 
 @cl.data_layer
 def get_data_layer():
-    return CosmosDataLayer(
-        endpoint=os.getenv("COSMOS_DB_URI") or cl.config.cosmosdb.uri,
-        key=os.getenv("COSMOS_DB_KEY") or cl.config.cosmosdb.key,
-        database_name=os.getenv("AZURE_DB_ID", "db0-wvvannyqg5e74"),
-        container_threads=os.getenv("AZURE_CONTAINER_NAME", "conversations"),
-        container_users=os.getenv("AZURE_USER_CONTAINER", "users"),
-    )
+    print(f"🔗 Connecting to DB: {os.getenv('POSTGRES_URI')}")
+    return PostgresDataLayer(os.getenv("POSTGRES_URI"))
 
 
 # Constants
@@ -237,8 +249,10 @@ async def login(username: str, password: str):
 
     class SimpleUser:
         def __init__(self, identifier):
-            self.identifier = identifier
-            self.id = identifier
+            self.identifier = identifier  # Login name
+            self.id = str(
+                uuid.uuid5(uuid.NAMESPACE_DNS, identifier)
+            )  # Deterministic UUID based on username
             self.name = identifier
             self.email = f"{identifier}@example.com"
             self.metadata = {
@@ -252,6 +266,7 @@ async def login(username: str, password: str):
 
         def to_dict(self):
             return {
+                "id": self.id,
                 "identifier": self.identifier,
                 "name": self.name,
                 "email": self.email,
@@ -260,13 +275,14 @@ async def login(username: str, password: str):
 
     if USERS.get(username) == password:
         user = SimpleUser(username)
-        dl = CosmosDataLayer(
-            endpoint=os.getenv("COSMOS_DB_URI"),
-            key=os.getenv("COSMOS_DB_KEY"),
-            database_name=os.getenv("AZURE_DB_ID", "db0-wvvannyqg5e74"),
-            container_threads=os.getenv("AZURE_CONTAINER_NAME", "conversations"),
-            container_users=os.getenv("AZURE_USER_CONTAINER", "users"),
-        )
+        # dl = PostgresDataLayer(
+        #     endpoint=os.getenv("COSMOS_DB_URI"),
+        #     key=os.getenv("COSMOS_DB_KEY"),
+        #     database_name=os.getenv("AZURE_DB_ID", "db0-wvvannyqg5e74"),
+        #     container_threads=os.getenv("AZURE_CONTAINER_NAME", "conversations"),
+        #     container_users=os.getenv("AZURE_USER_CONTAINER", "users"),
+        # )
+        dl = PostgresDataLayer(os.getenv("POSTGRES_URI"))
         try:
             await dl.ensure_user_exists(user.to_dict())
         finally:
@@ -378,6 +394,20 @@ async def handle_message(message: cl.Message):
     message.thread_id = conversation_id
     cl.user_session.set("conversation_id", conversation_id)
 
+    # --- Persist the user's message as a Chainlit step (role=user) ---
+    user_identifier = getattr(user, "identifier", None) or "anonymous"
+    await data_layer.create_step(
+        {
+            "threadId": conversation_id,
+            "id": message.id,  # reuse Chainlit message id if available
+            "role": "user",  # ✅ user
+            "type": "message",
+            "author": {"identifier": user_identifier},  # ✅ NOT 'anonymous'
+            "input": message.content,  # user typed text
+            "output": message.content,  # ensures it renders correctly
+        }
+    )
+
     response_msg = cl.Message(content="")
     await response_msg.send()
 
@@ -414,6 +444,9 @@ async def handle_message(message: cl.Message):
                 )
                 if extracted_id:
                     conversation_id = extracted_id
+                    # Keep Chainlit session aligned with the server-provided conversation id
+                    if extracted_id != cl.user_session.get("conversation_id"):
+                        cl.user_session.set("conversation_id", extracted_id)
 
                 cleaned_chunk = cleaned_chunk.replace("\\n", "\n")
                 found_refs = set(REFERENCE_REGEX.findall(cleaned_chunk))
@@ -443,9 +476,7 @@ async def handle_message(message: cl.Message):
         logging.exception("[app] Error during message handling.")
         await response_msg.stream_token(f"⚠️ Error: {e}")
     finally:
-        await data_layer.aclose()
         try:
-
             await generator.aclose()
         except Exception:
             pass
@@ -461,6 +492,19 @@ async def handle_message(message: cl.Message):
 
     response_msg.content = full_text
     await response_msg.update()
+
+    # --- Persist the assistant's reply as a Chainlit step (role=assistant) ---
+    await data_layer.create_step(
+        {
+            "threadId": conversation_id,
+            "role": "assistant",  # ✅ assistant
+            "type": "message",
+            "author": {"identifier": "assistant"},
+            "input": "",
+            "output": full_text,  # streamed final answer
+        }
+    )
+
     if full_text and message.content:
         await data_layer.update_thread(
             conversation_id,
@@ -470,3 +514,5 @@ async def handle_message(message: cl.Message):
 
         # ✅ No refresh_threads in current Chainlit version
         logging.info("🧵 Thread title updated. Will appear after sidebar refresh.")
+        # Close the pool after all DB work is done
+    await data_layer.aclose()

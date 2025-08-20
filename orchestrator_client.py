@@ -63,8 +63,13 @@ async def call_orchestrator_stream(
     if not url:
         raise Exception("ORCHESTRATOR_STREAM_ENDPOINT not set in environment variables")
 
-    if "localhost" in url:
-        function_key = "dont_need_function_key"
+    is_local = False
+    if url:
+        u = url.lower()
+        is_local = ("localhost" in u) or ("127.0.0.1" in u)
+
+    if is_local:
+        function_key = None  # no key needed locally
     else:
         function_key = get_function_key()
         if not function_key:
@@ -72,7 +77,9 @@ async def call_orchestrator_stream(
                 f"Error getting function key. Conversation ID: {conversation_id if conversation_id else 'N/A'}"
             )
 
-    headers = {"Content-Type": "application/json", "x-functions-key": function_key}
+    headers = {"Content-Type": "application/json"}
+    if not is_local:
+        headers["x-functions-key"] = function_key
 
     payload = {
         "conversation_id": conversation_id,

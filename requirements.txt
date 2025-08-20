@@ -1,5 +1,6 @@
 aiofiles
 aiohttp
+asyncpg==0.27.0
 azure-core
 azure-cosmos
 azure-identity

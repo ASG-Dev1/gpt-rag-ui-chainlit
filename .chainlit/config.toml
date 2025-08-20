@@ -26,9 +26,9 @@ enabled = true   # <- turns on thread storage + sidebar
 [auth]
 provider = "password"       # built-in basic login form
 
-# For CosmosDB, set these:
 [cosmosdb]
-enabled = true
+# enabled false, to use postgres:
+enabled = false
 uri = "${COSMOS_DB_URI}"
 key = "${COSMOS_DB_KEY}"
 database = "db0-wvvannyqg5e74"
@@ -36,7 +36,12 @@ container = "conversations"
 
 
 [data_layer]
-provider = "app:get_data_layer"
+# DataLayer for Cosmos:
+# provider = "app:get_data_layer"
+
+# DataLayer for Postgres:
+# Using the provider exposed by app.py:
+provider = "postgres_layer:get_data_layer"
 
 [features]
 
