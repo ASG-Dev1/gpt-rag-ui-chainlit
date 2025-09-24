@@ -3,9 +3,9 @@ import re
 import uuid
 import json
 import logging
+import requests
 
-
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, force=True)
 
 # Quiet down SDKs
 logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(
@@ -29,9 +29,100 @@ from orchestrator_client import call_orchestrator_stream
 # from cosmos_layer import CosmosDataLayer
 
 from postgres_layer import PostgresDataLayer
+
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+from openai import AzureOpenAI
+
+# Bing Agent client
+bing_client = AzureOpenAI(
+    api_key=os.getenv("AZURE_OPENAI_API_KEY"),  # same key or a separate one
+    azure_endpoint=os.getenv(
+        "AZURE_OPENAI_ENDPOINT"
+    ),  # e.g. https://<your-resource>.openai.azure.com/
+    api_version="2024-08-01-preview",
+)
+
+BING_AGENT_DEPLOYMENT = os.getenv(
+    "AZURE_OPENAI_DEPLOYMENT_NAME"
+)  # e.g. "my-bing-agent"
+# ==================== 🔹 Bing REST fallback helpers 🔹 ====================
+BING_SUBSCRIPTION_KEY = os.getenv("BING_SEARCH_KEY")
+BING_ENDPOINT = "https://api.bing.microsoft.com/v7.0/search"
+
+
+def bing_rest_search(query: str, count: int = 5):
+    headers = {"Ocp-Apim-Subscription-Key": BING_SUBSCRIPTION_KEY}
+    params = {"q": query, "mkt": "es-ES", "count": count, "textDecorations": True}
+    r = requests.get(BING_ENDPOINT, headers=headers, params=params, timeout=15)
+    r.raise_for_status()
+    items = r.json().get("webPages", {}).get("value", [])
+    return [
+        {"title": i["name"], "url": i["url"], "snippet": i.get("snippet", "")}
+        for i in items
+    ]
+
+
+# ==================== 🔹 End Bing helpers 🔹 ====================
+MIN_SIM_SCORE = 0.75  # tune this
+
+
+def looks_like_no_answer(text: str) -> bool:
+    if not text or len(text.strip()) < 40:
+        return True
+    patterns = [
+        "no encontr",  # ES: no encontré / no encontrado
+        "no pude encontrar",  # ES
+        "no se encontr",  # ES
+        "i couldn't find",  # EN
+        "i don't have information",
+        "no information found",
+        "not found in the available resources",
+    ]
+    tl = text.lower()
+    return any(p in tl for p in patterns)
+
+
+async def quick_similarity_score(data_layer, query: str) -> float:
+    """
+    Implement a *fast* top-1 similarity peek using whatever your data layer exposes.
+    Return 0.0 if you can’t compute it; we’ll then prefer web.
+    """
+    try:
+        # Example API — adjust to your own data layer
+        hits = await data_layer.semantic_search(query, k=1)
+        if not hits:
+            return 0.0
+        logging.info(f"🔎 similarity score: {hits[0].get('score')} for query: {query}")
+        return float(hits[0].get("score", 0.0))
+    except Exception:
+        return 0.0
+
+
+async def ask_bing(markdown_instructions: str, user_query: str) -> str:
+    """
+    Call your Azure OpenAI deployment that has Bing/Web grounding enabled.
+    We instruct it to ALWAYS include clickable Markdown links.
+    """
+    completion = bing_client.chat.completions.create(
+        model=BING_AGENT_DEPLOYMENT,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a web search agent. "
+                    "Always answer concisely and include a final section titled 'Fuentes' "
+                    "with a bulleted list of clickable Markdown links to your sources."
+                ),
+            },
+            {"role": "user", "content": f"{markdown_instructions}\n\n{user_query}"},
+        ],
+        temperature=0.2,
+    )
+    return completion.choices[0].message.content or "No response."
 
 
 def _iso_now() -> str:
@@ -41,7 +132,7 @@ def _iso_now() -> str:
 print("💥 Chainlit version =", cl.__version__)
 print("ENABLE_AUTH =", os.getenv("ENABLE_AUTH"))
 print("CHAINLIT_USERNAME =", os.getenv("CHAINLIT_USERNAME"))
-import os
+
 
 # print("ORCHESTRATOR_STREAM_ENDPOINT =", os.getenv("ORCHESTRATOR_STREAM_ENDPOINT"))
 
@@ -198,51 +289,6 @@ async def chat_profiles():
 USERS = {"admin": "1234", "james": "0000", "csaez": "0404"}
 
 
-# @cl.password_auth_callback
-# async def login(username: str, password: str):
-#     print(f"🔐 login() called for {username}")
-#     from cosmos_layer import CosmosDataLayer
-
-#     class SimpleUser:
-#         def __init__(self, identifier):
-#             self.identifier = identifier
-#             self.id = identifier
-#             self.name = identifier
-#             self.email = f"{identifier}@example.com"
-#             self.metadata = {
-#                 "email": self.email,
-#                 "client_principal_id": identifier,
-#                 "client_principal_name": identifier,
-#                 "name": identifier,
-#                 "authorized": True,
-#                 "chat_profile": "rag",
-#             }
-
-#         def to_dict(self):
-#             return {
-#                 "identifier": self.identifier,
-#                 "name": self.name,
-#                 "email": self.email,
-#                 "metadata": self.metadata,
-#             }
-
-#     if USERS.get(username) == password:
-#         user = SimpleUser(username)
-#         dl = CosmosDataLayer(
-#             endpoint=os.getenv("COSMOS_DB_URI"),
-#             key=os.getenv("COSMOS_DB_KEY"),
-#             database_name=os.getenv("AZURE_DB_ID", "db0-wvvannyqg5e74"),
-#             container_threads=os.getenv("AZURE_CONTAINER_NAME", "conversations"),
-#             container_users=os.getenv("AZURE_USER_CONTAINER", "users"),
-#         )
-#         try:
-#             await dl.ensure_user_exists(user.to_dict())
-#         finally:
-#             await dl.aclose()
-#         return user
-
-
-#     return None
 @cl.password_auth_callback
 async def login(username: str, password: str):
     print(f"🔐 login() called for {username}")
@@ -292,18 +338,6 @@ async def login(username: str, password: str):
     return None
 
 
-# @cl.on_chat_start
-# async def on_chat_start():
-#     print("🟢 on_chat_start called")
-
-
-#     await cl.Message(content="Welcome!").send()
-# @cl.on_chat_start
-# async def on_chat_start():
-#     user = cl.user_session.get("user")
-# profile = user.metadata.get("chat_profile", "unknown")
-# Only show this for new chats, not for resume
-# await cl.Message(content=f"Main assistant profile for **{profile}** answers").send()
 @cl.on_chat_start
 async def on_chat_start():
     user = cl.user_session.get("user")
@@ -374,6 +408,24 @@ async def on_chat_resume(thread):
     logging.info(f"[on_chat_resume] Rendered total: {rendered}")
 
 
+# def is_bing_question(text: str) -> bool:
+#     """
+#     Simple routing logic to decide when to call the Bing Agent.
+#     Replace with something smarter later.
+#     """
+#     return any(
+#         kw in text.lower()
+#         for kw in [
+#             "bing",
+#             "latest news",
+#             "search the web",
+#             "current president",
+#             "what's happening",
+#             "world news",
+#         ]
+#     )
+
+
 @cl.on_message
 async def handle_message(message: cl.Message):
     data_layer = get_data_layer()
@@ -415,6 +467,50 @@ async def handle_message(message: cl.Message):
         await response_msg.stream_token(
             "Oops! It looks like you don’t have access to this service."
         )
+        return
+
+    # 🔎 1) Fast routing decision (index vs web) BEFORE heavy orchestration
+    sim = await quick_similarity_score(data_layer, message.content)
+    route_to_web = sim < MIN_SIM_SCORE
+
+    if route_to_web:
+        # 🌐 Go straight to web search (Bing-grounded Azure OpenAI)
+        try:
+            web_answer = await ask_bing(
+                markdown_instructions="Responde en el idioma del usuario. Incluye 'Fuentes' con enlaces Markdown.",
+                user_query=message.content,
+            )
+            await response_msg.stream_token(web_answer)
+            response_msg.content = web_answer
+            await response_msg.update()
+        except Exception as e:
+            await response_msg.stream_token(f"⚠️ Bing Agent error: {e}")
+        # Persist assistant step & close as you already do
+        # (… keep your existing persistence code below …)
+        # IMPORTANT: return here so we don't run the orchestrator too.
+        return
+
+    # 👉 Bing Agent path
+    if is_bing_question(message.content):
+        response_msg = cl.Message(content="")
+        await response_msg.send()
+        try:
+            completion = await bing_client.chat.completions.create(
+                model=BING_AGENT_DEPLOYMENT,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful Bing search agent.",
+                    },
+                    {"role": "user", "content": message.content},
+                ],
+            )
+            answer = completion.choices[0].message.content
+            await response_msg.stream_token(answer)
+            response_msg.content = answer
+            await response_msg.update()
+        except Exception as e:
+            await response_msg.stream_token(f"⚠️ Bing Agent error: {e}")
         return
 
     buffer = ""
@@ -483,6 +579,19 @@ async def handle_message(message: cl.Message):
 
     full_text = full_text.replace(TERMINATE_TOKEN, "").replace("\\n", "\n")
     full_text = re.sub(r"(?<=[a-zA-Z])(?=[A-Z])", " ", full_text)
+
+    if looks_like_no_answer(full_text):
+        try:
+            web_answer = await ask_bing(
+                markdown_instructions="Responde en el idioma del usuario. Incluye 'Fuentes' con enlaces Markdown.",
+                user_query=message.content,
+            )
+            # Nicely separate the two sections
+            await response_msg.stream_token("\n\n---\n\n🌐 Búsqueda en la web:\n")
+            await response_msg.stream_token(web_answer)
+            full_text = (full_text or "") + "\n\n---\n\n" + web_answer
+        except Exception as e:
+            await response_msg.stream_token(f"\n\n⚠️ Bing Agent error: {e}")
 
     message_list = cl.user_session.get("message_list") or []
     message_list.append({"question": message.content, "answer": full_text})
