@@ -67,7 +67,7 @@ def bing_rest_search(query: str, count: int = 5):
 
 
 # ==================== 🔹 End Bing helpers 🔹 ====================
-MIN_SIM_SCORE = 0.75  # tune this
+MIN_SIM_SCORE = 0.2  # tune this
 
 
 def looks_like_no_answer(text: str) -> bool:
@@ -87,6 +87,8 @@ def looks_like_no_answer(text: str) -> bool:
 
 
 async def quick_similarity_score(data_layer, query: str) -> float:
+    logging.info(f"🔎 quick_similarity_score CALLED with query: {query}")
+
     """
     Implement a *fast* top-1 similarity peek using whatever your data layer exposes.
     Return 0.0 if you can’t compute it; we’ll then prefer web.
@@ -98,7 +100,8 @@ async def quick_similarity_score(data_layer, query: str) -> float:
             return 0.0
         logging.info(f"🔎 similarity score: {hits[0].get('score')} for query: {query}")
         return float(hits[0].get("score", 0.0))
-    except Exception:
+    except Exception as e:
+        logging.exception("semantic_search failed")
         return 0.0
 
 
@@ -408,22 +411,22 @@ async def on_chat_resume(thread):
     logging.info(f"[on_chat_resume] Rendered total: {rendered}")
 
 
-# def is_bing_question(text: str) -> bool:
-#     """
-#     Simple routing logic to decide when to call the Bing Agent.
-#     Replace with something smarter later.
-#     """
-#     return any(
-#         kw in text.lower()
-#         for kw in [
-#             "bing",
-#             "latest news",
-#             "search the web",
-#             "current president",
-#             "what's happening",
-#             "world news",
-#         ]
-#     )
+def is_bing_question(text: str) -> bool:
+    """
+    Simple routing logic to decide when to call the Bing Agent.
+    Replace with something smarter later.
+    """
+    return any(
+        kw in text.lower()
+        for kw in [
+            "bing",
+            "latest news",
+            "search the web",
+            "current president",
+            "what's happening",
+            "world news",
+        ]
+    )
 
 
 @cl.on_message

@@ -1,4 +1,7 @@
 from __future__ import annotations
+from azure.search.documents.aio import SearchClient
+from azure.core.credentials import AzureKeyCredential
+from openai import AsyncAzureOpenAI
 import asyncpg
 import os, uuid, json
 from datetime import datetime, timezone
@@ -27,6 +30,105 @@ class PostgresDataLayer(BaseDataLayer):
             raise RuntimeError("POSTGRES_URI or DATABASE_URL is required")
         self._dsn = dsn.replace("postgresql+asyncpg://", "postgresql://")
         self._pool_obj: Optional[asyncpg.Pool] = None
+        # 🔹 add Azure Search client
+        self._search_client = SearchClient(
+            endpoint=os.getenv("AZURE_SEARCH_SERVICE_ENDPOINT"),
+            index_name=os.getenv("AZURE_SEARCH_INDEX"),
+            credential=AzureKeyCredential(os.getenv("AZURE_SEARCH_API_KEY")),
+        )
+
+    async def semantic_search(self, query: str, k: int = 1):
+        """
+        Perform true vector similarity using Azure OpenAI embeddings + Azure Search.
+        """
+        # 1) Generate embedding for the query
+        aoai = AsyncAzureOpenAI(
+            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+            api_version="2024-08-01-preview",
+        )
+        emb = await aoai.embeddings.create(
+            model=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT"), input=query
+        )
+        vector = emb.data[0].embedding
+
+        # Field label mapping
+        field_labels = {
+            "Id_de_Requisicion": "Requisition ID",
+            "Numero_de_Caso": "Case Number",
+            "Costo_Unitario_Estimado_de_Articulo": "Estimated Unit Cost",
+            "Descripcion_de_Articulo": "Description",
+            "Marca_de_Articulo": "Brand",
+            "Modelo_de_Articulo": "Model",
+            "Garantia_de_Articulo": "Warranty",
+            "Unidad_de_Medida": "Unit",
+            "Cantidad": "Quantity",
+            "Fecha_Recibo_de_Requisicion": "Received Date",
+            "Numero_de_Requisicion": "Requisition Number",
+            "Titulo_de_Requisicion": "Requisition Title",
+            "Categoria_de_Requisicion": "Category",
+            "SubCategoria_de_Requisicion": "Subcategory",
+            "Agencia": "Agency",
+            "Nombre_de_Agencia_de_Entrega": "Delivery Agency",
+            "Metodo_de_Adquisicion": "Acquisition Method",
+            "Costo_Estimado_Total_de_Orden_de_Articulo": "Estimated Total Cost",
+            "Numero_de_Contrato": "Contract Number",
+            "Costo_Unitario_Final_de_Articulo": "Final Unit Cost",
+            "Costo_Final_de_Orden_de_Articulo": "Final Order Cost",
+            "Numero_de_Orden_de_Compra": "Purchase Order Number",
+            "Nombre_de_Archivo_de_Orden_de_Compra": "Order File Name",
+            "Url_de_Archivo_de_Orden_de_Compra": "Order File URL",
+            "Nombre_de_Suplidor": "Supplier",
+            "Telefono_de_Contacto_de_Suplidor": "Supplier Phone",
+            "Email_de_Suplidor": "Supplier Email",
+        }
+        all_fields = list(field_labels.keys())
+
+        # 2) Query Azure Search with both semantic and index search
+        semantic_results = await self._search_client.search(
+            search_text=query,
+            query_type="semantic",
+            semantic_configuration_name="my-semantic-config",
+            select=",".join(all_fields),
+            top=k,
+        )
+        index_results = await self._search_client.search(
+            search_text=query,
+            select=list(field_labels.keys()),
+            top=k,
+        )
+
+        combined_hits = []
+
+        async for doc in semantic_results:
+            combined_hits.append(
+                {
+                    "source": "semantic",
+                    "score": doc["@search.score"],
+                    "fields": {
+                        label: doc.get(field)
+                        for field, label in field_labels.items()
+                        if doc.get(field)
+                    },
+                }
+            )
+
+        async for doc in index_results:
+            combined_hits.append(
+                {
+                    "source": "index",
+                    "score": doc["@search.score"],
+                    "fields": {
+                        label: doc.get(field)
+                        for field, label in field_labels.items()
+                        if doc.get(field)
+                    },
+                }
+            )
+
+        # sort or filter if you like
+        combined_hits.sort(key=lambda x: x["score"], reverse=True)
+        return combined_hits
 
     async def _get_pool(self) -> asyncpg.Pool:
         if self._pool_obj is None:
@@ -415,6 +517,9 @@ class PostgresDataLayer(BaseDataLayer):
         if self._pool_obj:
             await self._pool_obj.close()
             self._pool_obj = None
+        # NEW: close Azure Search client session
+        if self._search_client:
+            await self._search_client.close()
 
 
 # Optional hook if you want to reference "postgres_layer:get_data_layer" from config.toml
