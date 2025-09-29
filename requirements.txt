@@ -4,6 +4,7 @@ asyncpg>=0.29.0
 azure-core
 azure-cosmos
 azure-identity
+azure-search-documents
 azure-storage-blob
 backoff
 certifi
@@ -17,6 +18,7 @@ Jinja2
 msal
 msal-extensions
 multidict
+openai
 opentelemetry-api
 opentelemetry-sdk
 pydantic
