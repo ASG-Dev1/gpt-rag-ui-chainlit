@@ -67,7 +67,7 @@ def bing_rest_search(query: str, count: int = 5):
 
 
 # ==================== 🔹 End Bing helpers 🔹 ====================
-MIN_SIM_SCORE = 0.2  # tune this
+MIN_SIM_SCORE = 0.0  # tune this
 
 
 def looks_like_no_answer(text: str) -> bool:
@@ -472,9 +472,24 @@ async def handle_message(message: cl.Message):
         )
         return
 
-    # 🔎 1) Fast routing decision (index vs web) BEFORE heavy orchestration
-    sim = await quick_similarity_score(data_layer, message.content)
-    route_to_web = sim < MIN_SIM_SCORE
+        # ✅ SMALL-TALK GUARD — put this BEFORE similarity routing
+
+    def is_smalltalk(text: str) -> bool:
+        t = text.lower().strip()
+        return (
+            any(t.startswith(x) for x in ["hi", "hello", "hey", "hola"])
+            or re.match(r"(que|qué)\s*d[ií]a", t)
+            or re.match(r"what( is|'s)? the day", t)
+        )
+
+    smalltalk = is_smalltalk(message.content)
+
+    if smalltalk:
+        sim = 1.0
+        route_to_web = False
+    else:
+        sim = await quick_similarity_score(data_layer, message.content)
+        route_to_web = sim < MIN_SIM_SCORE
 
     if route_to_web:
         # 🌐 Go straight to web search (Bing-grounded Azure OpenAI)
@@ -583,13 +598,16 @@ async def handle_message(message: cl.Message):
     full_text = full_text.replace(TERMINATE_TOKEN, "").replace("\\n", "\n")
     full_text = re.sub(r"(?<=[a-zA-Z])(?=[A-Z])", " ", full_text)
 
-    if looks_like_no_answer(full_text):
+    # ⬇️ ONLY run Bing fallback if NOT smalltalk
+    if not smalltalk and looks_like_no_answer(full_text):
         try:
             web_answer = await ask_bing(
-                markdown_instructions="Responde en el idioma del usuario. Incluye 'Fuentes' con enlaces Markdown.",
+                markdown_instructions=(
+                    "Responde en el idioma del usuario. "
+                    "Incluye 'Fuentes' con enlaces Markdown."
+                ),
                 user_query=message.content,
             )
-            # Nicely separate the two sections
             await response_msg.stream_token("\n\n---\n\n🌐 Búsqueda en la web:\n")
             await response_msg.stream_token(web_answer)
             full_text = (full_text or "") + "\n\n---\n\n" + web_answer
