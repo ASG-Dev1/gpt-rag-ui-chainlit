@@ -21,12 +21,10 @@ from chainlit import Action
 
 from datetime import datetime, timezone
 
-# from chainlit.types import ThreadDict
 from chainlit import Text, ElementSidebar
 from chainlit.data import BaseDataLayer
 from orchestrator_client import call_orchestrator_stream
 
-# from cosmos_layer import CosmosDataLayer
 
 from postgres_layer import PostgresDataLayer
 
@@ -35,6 +33,29 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+print("💥 Chainlit version =", cl.__version__)
+print("ENABLE_AUTH =", os.getenv("ENABLE_AUTH"))
+print("CHAINLIT_USERNAME =", os.getenv("CHAINLIT_USERNAME"))
+
+# === Blob URL helper ===
+BLOB_BASE_URL = os.getenv("BLOB_BASE_URL", "").rstrip("/")
+BLOB_CONTAINER_SAS = (os.getenv("BLOB_CONTAINER_SAS") or "").lstrip("?")
+
+
+def build_blob_url(filename: str) -> str:
+    """
+    Build a proper Azure Blob Storage URL for a given filename.
+    """
+    storage = os.getenv("BLOB_ACCOUNT_NAME", "asgprjedi1")
+    container = os.getenv("BLOB_CONTAINER_NAME", "attachments")
+    sas_token = (os.getenv("BLOB_CONTAINER_SAS") or "").lstrip("?")
+
+    safe_name = urllib.parse.quote(filename)
+    base = f"https://{storage}.blob.core.windows.net/{container}/{safe_name}"
+    return f"{base}?{sas_token}" if sas_token else base
+
+
+# ==================== 🔹 Bing Agent helpers 🔹 ====================
 from openai import AzureOpenAI
 
 # Bing Agent client
@@ -128,13 +149,8 @@ async def ask_bing(markdown_instructions: str, user_query: str) -> str:
     return completion.choices[0].message.content or "No response."
 
 
-def _iso_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-print("💥 Chainlit version =", cl.__version__)
-print("ENABLE_AUTH =", os.getenv("ENABLE_AUTH"))
-print("CHAINLIT_USERNAME =", os.getenv("CHAINLIT_USERNAME"))
+# def _iso_now() -> str:
+#     return datetime.now(timezone.utc).isoformat()
 
 
 # print("ORCHESTRATOR_STREAM_ENDPOINT =", os.getenv("ORCHESTRATOR_STREAM_ENDPOINT"))
@@ -151,6 +167,7 @@ print("CHAINLIT_USERNAME =", os.getenv("CHAINLIT_USERNAME"))
 #     )
 
 
+# Postgres data layer
 @cl.data_layer
 def get_data_layer():
     print(f"🔗 Connecting to DB: {os.getenv('POSTGRES_URI')}")
@@ -363,6 +380,51 @@ async def on_chat_start():
     print("🧾 user.metadata:", getattr(user, "metadata", {}))
 
 
+# @cl.on_chat_start
+# async def demo_pdf():
+#     import httpx
+
+#     storage = os.getenv("BLOB_ACCOUNT_NAME", "asgprjedi1")
+#     container = os.getenv("BLOB_CONTAINER_NAME", "chainlit-attachments-pdf")
+#     sas_token = os.getenv("BLOB_CONTAINER_SAS", "")
+
+#     pdf_url = (
+#         f"https://{storage}.blob.core.windows.net/{container}/1431815.pdf?{sas_token}"
+#     )
+
+#     async with httpx.AsyncClient(timeout=30) as client:
+#         r = await client.get(pdf_url)
+#         r.raise_for_status()
+#         pdf_bytes = r.content  # esto sí es el PDF
+
+#     await cl.Message(
+#         content="",
+#         elements=[
+#             cl.Pdf(name="Inline test", display="inline", content=pdf_bytes, page=1),
+#             # cl.Pdf(name="Sidebar test", display="side", content=pdf_bytes, page=1),
+#         ],
+#     ).send()
+
+
+# async def demo_pdf():
+#     storage = os.getenv("BLOB_ACCOUNT_NAME", "asgprjedi1")
+#     container = os.getenv("BLOB_CONTAINER_NAME", "chainlit-attachments-pdf")
+#     sas_token = os.getenv("BLOB_CONTAINER_SAS", "")
+
+#     pdf_url = (
+#         f"https://{storage}.blob.core.windows.net/{container}/1431815.pdf?{sas_token}"
+#     )
+
+#     await cl.Message(
+#         content="Test of PDF in both inline and side:",
+#         elements=[
+#             cl.Pdf(name="Inline test", display="inline", url=pdf_url, page=1),
+#             cl.Pdf(name="Sidebar test", display="side", url=pdf_url, page=1),
+#         ],
+
+#     ).send()
+
+
 @cl.on_chat_resume
 async def on_chat_resume(thread):
     cl.user_session.set("conversation_id", thread["id"])
@@ -503,9 +565,6 @@ async def handle_message(message: cl.Message):
             await response_msg.update()
         except Exception as e:
             await response_msg.stream_token(f"⚠️ Bing Agent error: {e}")
-        # Persist assistant step & close as you already do
-        # (… keep your existing persistence code below …)
-        # IMPORTANT: return here so we don't run the orchestrator too.
         return
 
     # 👉 Bing Agent path
@@ -620,8 +679,51 @@ async def handle_message(message: cl.Message):
 
     logging.info(f"[response message is]: {response_msg}")
 
-    response_msg.content = full_text
+    import httpx
+
+    # Transform [filename](url) links to [INLINE_PDF:filename|url] SO THAT CHAINLIT PDF VIEWER CAN PICK THEM UP AND SHOW THEM
+    def convert_pdf_links_to_inline_tags(text: str) -> str:
+        return re.sub(
+            r"\[([^\]]+)\]\((https?://[^\)]+\.pdf)\)",
+            r"[INLINE_PDF:\1|\2]",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+    full_text = convert_pdf_links_to_inline_tags(full_text)
+
+    # Handle inline PDF viewer
+    inline_pdfs = re.findall(r"\[INLINE_PDF:(.*?)\|(.*?)\]", full_text)
+
+    # Clean up placeholder tags before updating response
+    clean_text = re.sub(r"\[INLINE_PDF:.*?\|.*?\]", "", full_text).strip()
+
+    # Update final user message
+    response_msg.content = clean_text
     await response_msg.update()
+
+    # Send PDF viewers separately (fetch content first)
+    async with httpx.AsyncClient(timeout=30) as client:
+        for pdf_name, pdf_url in inline_pdfs:
+            logging.info(
+                f"📄 Fetching PDF for inline display: {pdf_name} from {pdf_url}"
+            )
+            try:
+                r = await client.get(pdf_url.strip())
+                r.raise_for_status()
+                pdf_bytes = r.content
+                pdf_element = cl.Pdf(
+                    name=pdf_name.strip(),
+                    display="inline",
+                    content=pdf_bytes,
+                    page=1,
+                )
+                await cl.Message(
+                    content=f"📄 Documento adjunto: {pdf_name.strip()}",
+                    elements=[pdf_element],
+                ).send()
+            except Exception as e:
+                logging.warning(f"⚠️ Failed to fetch or render PDF {pdf_name}: {e}")
 
     # --- Persist the assistant's reply as a Chainlit step (role=assistant) ---
     await data_layer.create_step(
@@ -642,7 +744,6 @@ async def handle_message(message: cl.Message):
             summary=message.content[:60],
         )
 
-        # ✅ No refresh_threads in current Chainlit version
         logging.info("🧵 Thread title updated. Will appear after sidebar refresh.")
         # Close the pool after all DB work is done
     await data_layer.aclose()
