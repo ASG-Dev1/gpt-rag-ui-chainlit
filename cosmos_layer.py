@@ -612,7 +612,7 @@ class CosmosDataLayer(BaseDataLayer):
             rows = await con.fetch(
                 """
             SELECT id, role, type, author_identifier, input, output, created_at, updated_at
-            FROM steps WHERE conversation_id=$1 ORDER BY created_at""",
+            FROM steps WHERE thread_id=$1 ORDER BY created_at""",
                 thread_id,
             )
             steps = [
@@ -659,7 +659,7 @@ class CosmosDataLayer(BaseDataLayer):
                 INSERT INTO conversations (id, user_id, name, summary, created_at, updated_at)
                 VALUES ($1, $2, 'New conversation', 'New conversation', now(), now())
                 ON CONFLICT (id) DO NOTHING;
-                INSERT INTO steps (id, conversation_id, role, type, author_identifier, input, output, created_at, updated_at)
+                INSERT INTO steps (id, thread_id, role, type, author_identifier, input, output, created_at, updated_at)
                 VALUES (gen_random_uuid(), $1, $3, $4, $5, $6, $7, now(), now());
                 UPDATE conversations SET updated_at=now() WHERE id=$1;
                 """,
@@ -744,7 +744,7 @@ class CosmosDataLayer(BaseDataLayer):
         Insert a single step row. If the conversation doesn't exist yet,
         create it so the FK is satisfied.
         """
-        thread_id = step_dict.get("threadId") or step_dict.get("conversation_id")
+        thread_id = step_dict.get("threadId") or step_dict.get("thread_id")
         if not thread_id:
             return
 
@@ -770,7 +770,7 @@ class CosmosDataLayer(BaseDataLayer):
             # insert the step
             await con.execute(
                 """
-                INSERT INTO steps (id, conversation_id, role, type, author_identifier, input, output, created_at, updated_at)
+                INSERT INTO steps (id, thread_id, role, type, author_identifier, input, output, created_at, updated_at)
                 VALUES ($1,$2,$3,$4,$5,$6,$7, now(), now())
                 ON CONFLICT (id) DO NOTHING
                 """,

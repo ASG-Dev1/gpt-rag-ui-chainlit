@@ -214,7 +214,7 @@ def read_env_boolean(var_name: str, default: bool = False) -> bool:
     return value in {"true", "1", "yes"}
 
 
-def extract_conversation_id_from_chunk(chunk: str) -> Tuple[Optional[str], str]:
+def extract_thread_id_from_chunk(chunk: str) -> Tuple[Optional[str], str]:
     match = UUID_REGEX.match(chunk)
     if match:
         conv_id = match.group(1)
@@ -425,52 +425,39 @@ async def on_chat_start():
 #     ).send()
 
 
+# ==================== 🔹 Chainlit Resume & History Handlers 🔹 ====================
+import chainlit as cl
+
+
+# @cl.on_chat_resume
+# async def on_chat_resume(thread_id: str):
+#     cl.user_session.set("thread_id", thread_id)
+#     print(f"🟢 on_chat_resume called with thread_id={thread_id}")
 @cl.on_chat_resume
-async def on_chat_resume(thread):
-    cl.user_session.set("conversation_id", thread["id"])
+async def on_chat_resume(thread):  # ⛔ no `cl.Thread` type here
+    print(f"🔁 Resuming thread: {thread.id}")
+    cl.user_session.set("thread", thread)
 
-    # 👇 Show status
-    await cl.Message(content="🔁 Restoring session...").send()
+    messages = await cl.get_messages(thread.id)
+    for msg in messages:
+        print(f"{msg.author}: {msg.content}")
 
-    data_layer = get_data_layer()
-    thread_data = await data_layer.get_thread(thread["id"])
 
-    if not thread_data or thread_data.get("id") != thread["id"]:
-        logging.warning(
-            f"[on_chat_resume] Thread not found or mismatch: {thread['id']}"
-        )
-        await cl.Message(content="⚠️ This thread no longer exists.").send()
-        return
+# @cl.on_chat_load_history
+async def load_history(thread_id: str):
+    print(f"📜 load_history called with thread_id={thread_id}")
+    from chainlit.data import get_data_layer
 
-    steps = await data_layer.list_steps(thread["id"])
-    logging.info(f"[on_chat_resume] Loaded {len(steps)} steps")
+    data_layer = await get_data_layer()
+    steps = await data_layer.list_steps(thread_id)
 
-    non_messages = [s for s in steps if s.get("type") != "message"]
-    logging.info(f"[on_chat_resume] Skipping {len(non_messages)} non-message steps")
-
-    # 👇 Send messages one-by-one with debug log
-    rendered = 0
     for step in steps:
-        if step.get("type") != "message":
+        if step["type"] != "message":
             continue
-
-        role = step.get("role", "assistant")
-        content = step.get("output" if role == "assistant" else "input", "")
-        if not content:
-            continue
-
-        msg = cl.Message(
-            content=content,
+        await cl.Message(
+            content=step["output"] or step["input"] or "",
             author=step["author"]["identifier"],
-            thread_id=thread["id"],
-        )
-        await msg.send()
-        logging.info(
-            f"[on_chat_resume] Sent message from {msg.author}: {msg.content[:60]}"
-        )
-        rendered += 1
-
-    logging.info(f"[on_chat_resume] Rendered total: {rendered}")
+        ).send()
 
 
 def is_bing_question(text: str) -> bool:
@@ -499,23 +486,23 @@ async def handle_message(message: cl.Message):
 
     message.id = message.id or str(uuid.uuid4())
 
-    conversation_id = message.thread_id or cl.user_session.get("conversation_id")
+    thread_id = message.thread_id or cl.user_session.get("thread_id")
 
-    print(f"📨 Handling message for thread: {conversation_id}")
+    print(f"📨 Handling message for thread: {thread_id}")
 
-    if not conversation_id:
+    if not thread_id:
 
-        conversation_id = await data_layer.create_thread(user.identifier)
-        cl.user_session.set("conversation_id", conversation_id)
+        thread_id = await data_layer.create_thread(user.identifier)
+        cl.user_session.set("thread_id", thread_id)
 
-    message.thread_id = conversation_id
-    cl.user_session.set("conversation_id", conversation_id)
+    message.thread_id = thread_id
+    cl.user_session.set("thread_id", thread_id)
 
     # --- Persist the user's message as a Chainlit step (role=user) ---
     user_identifier = getattr(user, "identifier", None) or "anonymous"
     await data_layer.create_step(
         {
-            "threadId": conversation_id,
+            "threadId": thread_id,
             "id": message.id,  # reuse Chainlit message id if available
             "role": "user",  # ✅ user
             "type": "message",
@@ -594,7 +581,7 @@ async def handle_message(message: cl.Message):
     full_text = ""
     references = set()
     auth_info = check_authorization()
-    generator = call_orchestrator_stream(conversation_id, message.content, auth_info)
+    generator = call_orchestrator_stream(thread_id, message.content, auth_info)
 
     try:
         async for chunk in generator:
@@ -612,14 +599,14 @@ async def handle_message(message: cl.Message):
                     logging.warning(f"[parser] Failed to parse chunk: {e}")
                     continue
 
-                extracted_id, cleaned_chunk = extract_conversation_id_from_chunk(
+                extracted_id, cleaned_chunk = extract_thread_id_from_chunk(
                     cleaned_chunk
                 )
                 if extracted_id:
-                    conversation_id = extracted_id
+                    thread_id = extracted_id
                     # Keep Chainlit session aligned with the server-provided conversation id
-                    if extracted_id != cl.user_session.get("conversation_id"):
-                        cl.user_session.set("conversation_id", extracted_id)
+                    if extracted_id != cl.user_session.get("thread_id"):
+                        cl.user_session.set("thread_id", extracted_id)
 
                 cleaned_chunk = cleaned_chunk.replace("\\n", "\n")
                 found_refs = set(REFERENCE_REGEX.findall(cleaned_chunk))
@@ -728,7 +715,7 @@ async def handle_message(message: cl.Message):
     # --- Persist the assistant's reply as a Chainlit step (role=assistant) ---
     await data_layer.create_step(
         {
-            "threadId": conversation_id,
+            "threadId": thread_id,
             "role": "assistant",  # ✅ assistant
             "type": "message",
             "author": {"identifier": "assistant"},
@@ -739,7 +726,7 @@ async def handle_message(message: cl.Message):
 
     if full_text and message.content:
         await data_layer.update_thread(
-            conversation_id,
+            thread_id,
             name=message.content[:60],
             summary=message.content[:60],
         )

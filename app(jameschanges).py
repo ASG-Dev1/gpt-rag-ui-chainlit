@@ -49,7 +49,7 @@ def read_env_boolean(var_name: str, default: bool = False) -> bool:
     return value in {"true", "1", "yes"}
 
 
-def extract_conversation_id_from_chunk(chunk: str) -> Tuple[Optional[str], str]:
+def extract_thread_id_from_chunk(chunk: str) -> Tuple[Optional[str], str]:
     match = UUID_REGEX.match(chunk)
     if match:
         conv_id = match.group(1)
@@ -107,7 +107,7 @@ async def on_chat_start():
 @cl.on_message
 async def handle_message(message: cl.Message):
     message.id = message.id or str(uuid.uuid4())
-    conversation_id = cl.user_session.get("conversation_id") or ""
+    thread_id = cl.user_session.get("thread_id") or ""
     response_msg = cl.Message(content="")
 
     app_user = cl.user_session.get("user")
@@ -124,16 +124,16 @@ async def handle_message(message: cl.Message):
     full_text = ""
     references = set()
     auth_info = check_authorization()
-    generator = call_orchestrator_stream(conversation_id, message.content, auth_info)
+    generator = call_orchestrator_stream(thread_id, message.content, auth_info)
 
     try:
         async for chunk in generator:
             # logging.info("[app] Chunk received: %s", chunk)
 
             # Extract and update conversation ID
-            extracted_id, cleaned_chunk = extract_conversation_id_from_chunk(chunk)
+            extracted_id, cleaned_chunk = extract_thread_id_from_chunk(chunk)
             if extracted_id:
-                conversation_id = extracted_id
+                thread_id = extracted_id
 
             cleaned_chunk = cleaned_chunk.replace("\\n", "\n")
 
@@ -180,7 +180,7 @@ async def handle_message(message: cl.Message):
             if "async generator ignored GeneratorExit" not in str(exc):
                 raise
 
-    cl.user_session.set("conversation_id", conversation_id)
+    cl.user_session.set("thread_id", thread_id)
     await response_msg.update()
 
     # Final reference handling and update

@@ -55,9 +55,7 @@ def get_function_key():
     return function_key
 
 
-async def call_orchestrator_stream(
-    conversation_id: str, question: str, auth_info: dict
-):
+async def call_orchestrator_stream(thread_id: str, question: str, auth_info: dict):
     print("🟦 auth_info for orchestrator:", auth_info)
     url = os.getenv("ORCHESTRATOR_STREAM_ENDPOINT")
     if not url:
@@ -74,7 +72,7 @@ async def call_orchestrator_stream(
         function_key = get_function_key()
         if not function_key:
             raise Exception(
-                f"Error getting function key. Conversation ID: {conversation_id if conversation_id else 'N/A'}"
+                f"Error getting function key. Conversation ID: {thread_id if thread_id else 'N/A'}"
             )
 
     headers = {"Content-Type": "application/json"}
@@ -82,7 +80,7 @@ async def call_orchestrator_stream(
         headers["x-functions-key"] = function_key
 
     payload = {
-        "conversation_id": conversation_id,
+        "thread_id": thread_id,
         "question": question,
         "client_principal_id": auth_info.get("client_principal_id", "no-auth"),
         "client_principal_name": auth_info.get("client_principal_name", "anonymous"),

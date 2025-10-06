@@ -19,8 +19,8 @@ def _iso_now() -> str:
 class PostgresDataLayer(BaseDataLayer):
     """
     Data layer backed by my normalized tables:
-      conversations(id uuid pk, user_id text, name text, summary text, created_at, updated_at)
-      steps(id uuid pk, conversation_id uuid fk, role text, type text, author_identifier text,
+      threads(id uuid pk, user_id text, name text, summary text, created_at, updated_at)
+      steps(id uuid pk, thread_id uuid fk, role text, type text, author_identifier text,
             input text, output text, created_at, updated_at)
     """
 
@@ -203,6 +203,7 @@ class PostgresDataLayer(BaseDataLayer):
                 "SELECT id, identifier, name, email, meta FROM users WHERE identifier=$1",
                 identifier,
             )
+            print("Fetched user:", row)
             if not row:
                 return None
             u = User(identifier=row["identifier"], name=row["name"], email=row["email"])
@@ -213,23 +214,26 @@ class PostgresDataLayer(BaseDataLayer):
     async def create_thread(self, user_id: str) -> str:
         p = await self._get_pool()
         thread_id = str(uuid.uuid4())
+        print("Creating thread for user_id:", user_id, "with thread_id:", thread_id)
         async with p.acquire() as con:
             await con.execute(
                 """
-            INSERT INTO conversations (id, user_id, name, summary, created_at, updated_at)
+            INSERT INTO threads (id, user_id, name, summary, created_at, updated_at)
             VALUES ($1,$2,'New conversation','New conversation', now(), now())""",
                 thread_id,
                 user_id,
             )
         return thread_id
 
+    # This function is relied on by the Chainlit sidebar to resume conversations.
     async def get_thread(self, thread_id: str):
+        print("Fetching thread:", thread_id)
         p = await self._get_pool()
         async with p.acquire() as con:
             row = await con.fetchrow(
                 """
             SELECT id, user_id, name, summary, created_at, updated_at
-            FROM conversations WHERE id=$1""",
+            FROM threads WHERE id=$1""",
                 thread_id,
             )
             if not row:
@@ -237,7 +241,7 @@ class PostgresDataLayer(BaseDataLayer):
             rows = await con.fetch(
                 """
             SELECT id, role, type, author_identifier, input, output, created_at, updated_at
-            FROM steps WHERE conversation_id=$1 ORDER BY created_at""",
+            FROM steps WHERE thread_id=$1 ORDER BY created_at""",
                 thread_id,
             )
             steps = [
@@ -268,31 +272,35 @@ class PostgresDataLayer(BaseDataLayer):
         doc = await self.get_thread(thread_id)
         return doc.get("steps", []) if doc else []
 
+    # This function is relied on by the Chainlit sidebar to resume conversations.
     async def append_message(self, thread_id: str, message: Dict[str, Any]):
-        p = await self._get_pool()
+        print("Appending message to thread:", thread_id)
         role = message.get("role", "user")
         author = message.get("author", {})
         author_id = (
             author.get("identifier") if isinstance(author, dict) else str(author)
         )
+        print("Role:", role, "Author ID:", author_id)
+        p = await self._get_pool()
         input_text = message.get("input", "")
         output_text = message.get("output", "")
         type_ = message.get("type", "message")
         async with p.acquire() as con:
             await con.execute(
                 """
-                INSERT INTO conversations (id, user_id, name, summary, created_at, updated_at)
+                INSERT INTO threads (id, user_id, name, summary, created_at, updated_at)
                 VALUES ($1, $2, 'New conversation', 'New conversation', now(), now())
                 ON CONFLICT (id) DO NOTHING;
-                UPDATE conversations
+                -- Only claim authorship for user role, not assistant; ensures only 'user' can claim threads
+                UPDATE threads
                 SET user_id=$2, updated_at=now()
                 WHERE id=$1
-                AND $3='user'
+                AND role='user'
                 AND $2 <> 'anonymous'
                 AND (user_id IS NULL OR user_id='anonymous');
-                INSERT INTO steps (id, conversation_id, role, type, author_identifier, input, output, created_at, updated_at)
+                INSERT INTO steps (id, thread_id, role, type, author_identifier, input, output, created_at, updated_at)
                 VALUES (gen_random_uuid(), $1, $3, $4, $5, $6, $7, now(), now());
-                UPDATE conversations SET updated_at=now() WHERE id=$1;
+                UPDATE threads SET updated_at=now() WHERE id=$1;
                 """,
                 thread_id,
                 author_id if role == "user" else "anonymous",
@@ -312,24 +320,25 @@ class PostgresDataLayer(BaseDataLayer):
         async with p.acquire() as con:
             if name is not None and summary is not None:
                 await con.execute(
-                    "UPDATE conversations SET name=$1, summary=$2, updated_at=now() WHERE id=$3",
+                    "UPDATE threads SET name=$1, summary=$2, updated_at=now() WHERE id=$3",
                     name,
                     summary,
                     thread_id,
                 )
             elif name is not None:
                 await con.execute(
-                    "UPDATE conversations SET name=$1, updated_at=now() WHERE id=$2",
+                    "UPDATE threads SET name=$1, updated_at=now() WHERE id=$2",
                     name,
                     thread_id,
                 )
             elif summary is not None:
                 await con.execute(
-                    "UPDATE conversations SET summary=$1, updated_at=now() WHERE id=$2",
+                    "UPDATE threads SET summary=$1, updated_at=now() WHERE id=$2",
                     summary,
                     thread_id,
                 )
 
+    # This function is relied on by the Chainlit sidebar to resume conversations.
     async def list_threads(self, pagination=None, filters=None):
         user_id = getattr(filters, "userId", None) if filters else None
         p = await self._get_pool()
@@ -338,7 +347,8 @@ class PostgresDataLayer(BaseDataLayer):
             if user_id:
                 # Chainlit may pass UUID object or UUID-ish string
                 uid_str = str(user_id)
-                if "-" in uid_str:  # looks like a UUID
+                # Only treat as UUID if it has '-' and is longer than 10 chars
+                if "-" in uid_str and len(uid_str) > 10:
                     row = await con.fetchrow(
                         "SELECT identifier FROM users WHERE id=$1", uid_str
                     )
@@ -350,7 +360,7 @@ class PostgresDataLayer(BaseDataLayer):
                 rows = await con.fetch(
                     """
                     SELECT id, name, summary, created_at, updated_at
-                    FROM conversations
+                    FROM threads
                     WHERE user_id=$1
                     ORDER BY updated_at DESC
                     """,
@@ -360,10 +370,13 @@ class PostgresDataLayer(BaseDataLayer):
                 rows = await con.fetch(
                     """
                     SELECT id, name, summary, created_at, updated_at
-                    FROM conversations
+                    FROM threads
                     ORDER BY updated_at DESC
                     """
                 )
+        print(
+            "Listing threads for user_id:", user_id, "-> identifier:", ident_for_convos
+        )
         data = [
             {
                 "id": str(r["id"]),
@@ -384,8 +397,14 @@ class PostgresDataLayer(BaseDataLayer):
         Insert a single step row. If the conversation doesn't exist yet,
         create it so the FK is satisfied.
         """
-        thread_id = step_dict.get("threadId") or step_dict.get("conversation_id")
+        thread_id = step_dict.get("threadId") or step_dict.get("thread_id")
         if not thread_id:
+            return
+        # Validate that thread_id is a valid UUID
+        try:
+            uuid.UUID(str(thread_id))
+        except Exception:
+            # Not a valid UUID, do not proceed
             return
 
         role = step_dict.get("role", "user")
@@ -400,7 +419,7 @@ class PostgresDataLayer(BaseDataLayer):
             # 🔸 unconditionally upsert conversation row to avoid FK races
             await con.execute(
                 """
-                INSERT INTO conversations (id, user_id, name, summary, created_at, updated_at)
+                INSERT INTO threads (id, user_id, name, summary, created_at, updated_at)
                 VALUES ($1, $2, 'New conversation', 'New conversation', now(), now())
                 ON CONFLICT (id) DO NOTHING
                 """,
@@ -411,7 +430,7 @@ class PostgresDataLayer(BaseDataLayer):
             if role == "user" and author_id != "anonymous":
                 await con.execute(
                     """
-                    UPDATE conversations
+                    UPDATE threads
                     SET user_id=$2, updated_at=now()
                     WHERE id=$1
                     AND (user_id IS NULL OR user_id='anonymous')
@@ -422,7 +441,7 @@ class PostgresDataLayer(BaseDataLayer):
             # insert the step
             await con.execute(
                 """
-                INSERT INTO steps (id, conversation_id, role, type, author_identifier, input, output, created_at, updated_at)
+                INSERT INTO steps (id, thread_id, role, type, author_identifier, input, output, created_at, updated_at)
                 VALUES ($1,$2,$3,$4,$5,$6,$7, now(), now())
                 ON CONFLICT (id) DO NOTHING
                 """,
@@ -435,7 +454,7 @@ class PostgresDataLayer(BaseDataLayer):
                 output_text,
             )
             await con.execute(
-                "UPDATE conversations SET updated_at=now() WHERE id=$1", thread_id
+                "UPDATE threads SET updated_at=now() WHERE id=$1", thread_id
             )
 
     async def update_step(self, thread_id=None, step_dict=None):
@@ -481,13 +500,13 @@ class PostgresDataLayer(BaseDataLayer):
     async def delete_thread(self, thread_id: str):
         p = await self._get_pool()
         async with p.acquire() as con:
-            await con.execute("DELETE FROM conversations WHERE id=$1", thread_id)
+            await con.execute("DELETE FROM threads WHERE id=$1", thread_id)
 
     async def get_thread_author(self, thread_id: str) -> Optional[str]:
         p = await self._get_pool()
         async with p.acquire() as con:
             row = await con.fetchrow(
-                "SELECT user_id FROM conversations WHERE id=$1", thread_id
+                "SELECT user_id FROM threads WHERE id=$1", thread_id
             )
             return row["user_id"] if row else None
 
@@ -554,7 +573,7 @@ async def migrate():
           updated_at TIMESTAMPTZ DEFAULT now()
         );
 
-        CREATE TABLE IF NOT EXISTS conversations (
+        CREATE TABLE IF NOT EXISTS threads (
           id UUID PRIMARY KEY,
           user_id TEXT NOT NULL,
           name TEXT,
@@ -565,7 +584,7 @@ async def migrate():
 
         CREATE TABLE IF NOT EXISTS steps (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+          thread_id UUID NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
           role TEXT,
           type TEXT,
           author_identifier TEXT,

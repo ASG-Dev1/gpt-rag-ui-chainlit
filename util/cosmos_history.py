@@ -43,7 +43,7 @@
 #         return []
 
 
-# async def get_user_messages(conversation_id: str):
+# async def get_user_messages(thread_id: str):
 #     try:
 #         async with CosmosClient(COSMOS_URI, credential=COSMOS_KEY) as client:
 #             container = client.get_database_client(COSMOS_DB_ID).get_container_client(
@@ -53,9 +53,9 @@
 #             query = """
 #               SELECT VALUE c.history
 #                 FROM c
-#                WHERE c.id = @conversation_id
+#                WHERE c.id = @thread_id
 #             """
-#             params = [{"name": "@conversation_id", "value": conversation_id}]
+#             params = [{"name": "@thread_id", "value": thread_id}]
 #             items = container.query_items(query=query, parameters=params)
 
 #             # Get the first result only
@@ -65,5 +65,5 @@
 #             return []
 
 #     except exceptions.CosmosHttpResponseError as e:
-#         logging.error(f"[cosmos] Failed to fetch history for {conversation_id}: {e}")
+#         logging.error(f"[cosmos] Failed to fetch history for {thread_id}: {e}")
 #         return []
