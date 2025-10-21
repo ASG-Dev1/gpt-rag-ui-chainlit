@@ -39,20 +39,16 @@ class PostgresDataLayer(BaseDataLayer):
 
     async def semantic_search(self, query: str, k: int = 1):
         """
-        Perform true vector similarity using Azure OpenAI embeddings + Azure Search.
+        Perform semantic search using Azure Search.
+        Supports multiple case numbers and selective field retrieval.
+        If the query asks for 'all' or 'toda la información', returns all fields.
+        Otherwise, only returns the fields explicitly mentioned.
         """
-        # 1) Generate embedding for the query
-        aoai = AsyncAzureOpenAI(
-            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-            api_version="2024-08-01-preview",
-        )
-        emb = await aoai.embeddings.create(
-            model=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT"), input=query
-        )
-        vector = emb.data[0].embedding
+        import re
 
-        # Field label mapping
+        # case_numbers = re.findall(r"\b\d{2}J-\d{5}\b", query.upper())
+        case_numbers = re.findall(r"\b\d{2}[A-Z]{1,2}-\d{5}\b", query, re.IGNORECASE)
+
         field_labels = {
             "Id_de_Requisicion": "Requisition ID",
             "Numero_de_Caso": "Case Number",
@@ -82,53 +78,50 @@ class PostgresDataLayer(BaseDataLayer):
             "Telefono_de_Contacto_de_Suplidor": "Supplier Phone",
             "Email_de_Suplidor": "Supplier Email",
         }
+
         all_fields = list(field_labels.keys())
+        q_lower = query.lower()
 
-        # 2) Query Azure Search with both semantic and index search
-        semantic_results = await self._search_client.search(
-            search_text=query,
-            query_type="semantic",
-            semantic_configuration_name="my-semantic-config",
-            select=",".join(all_fields),
-            top=k,
-        )
-        index_results = await self._search_client.search(
-            search_text=query,
-            select=list(field_labels.keys()),
-            top=k,
-        )
+        # Determine which fields to retrieve based on query content
+        requested_fields = []
+        for key, label in field_labels.items():
+            label_words = [w.lower() for w in label.split()]
+            if any(word in q_lower for word in label_words) or key.lower() in q_lower:
+                requested_fields.append(key)
 
-        combined_hits = []
+        # Fallback to all fields if none or "all" is requested
+        if not requested_fields or any(
+            x in q_lower for x in ["todo", "toda", "all", "completo", "full"]
+        ):
+            requested_fields = all_fields
 
-        async for doc in semantic_results:
-            combined_hits.append(
-                {
-                    "source": "semantic",
-                    "score": doc["@search.score"],
-                    "fields": {
-                        label: doc.get(field)
-                        for field, label in field_labels.items()
-                        if doc.get(field)
-                    },
-                }
-            )
+        all_hits = []
 
-        async for doc in index_results:
-            combined_hits.append(
-                {
-                    "source": "index",
-                    "score": doc["@search.score"],
-                    "fields": {
-                        label: doc.get(field)
-                        for field, label in field_labels.items()
-                        if doc.get(field)
-                    },
-                }
-            )
+        if case_numbers:
+            for case_no in case_numbers:
+                results = await self._search_client.search(
+                    search_text=case_no,
+                    query_type="semantic",
+                    semantic_configuration_name="my-semantic-config",
+                    top=k,
+                    select=",".join(requested_fields),
+                )
 
-        # sort or filter if you like
-        combined_hits.sort(key=lambda x: x["score"], reverse=True)
-        return combined_hits
+                async for doc in results:
+                    fields = {
+                        field_labels.get(f, f): doc.get(f)
+                        for f in requested_fields
+                        if doc.get(f) is not None
+                    }
+                    all_hits.append(
+                        {
+                            "case_number": case_no,
+                            "score": doc.get("@search.score"),
+                            "fields": fields,
+                        }
+                    )
+
+        return all_hits
 
     async def _get_pool(self) -> asyncpg.Pool:
         if self._pool_obj is None:
@@ -539,6 +532,9 @@ class PostgresDataLayer(BaseDataLayer):
         # NEW: close Azure Search client session
         if self._search_client:
             await self._search_client.close()
+
+    async def close(self):
+        await self.aclose()
 
 
 # Optional hook if you want to reference "postgres_layer:get_data_layer" from config.toml

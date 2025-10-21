@@ -275,15 +275,51 @@ def check_authorization() -> dict:
     return result
 
 
+@cl.set_starters
+async def set_starters():
+    return [
+        cl.Starter(
+            label="ASG",
+            message="Cuál es el portal oficial de la Administración de Servicios Generales de Puerto Rico?",
+            icon="/public/asg_concept-05.png",
+        ),
+        cl.Starter(
+            label="Mercadito",
+            message="Cuál es el portal oficial para acceder a J.E.D.I de la Administración de Servicios Generales de Puerto Rico?",
+            icon="/public/cart.jpg",
+        ),
+        cl.Starter(
+            label="FAQ",
+            message="Qué preguntas frecuentes hay sobre la Administración de Servicios Generales de Puerto Rico?",
+            icon="/public/faq.jpg",
+            # command="ASGPT-FAQ",
+        ),
+        cl.Starter(
+            label="Clima",
+            message="Cuál es el pronóstico del tiempo para hoy en San Juan, Puerto Rico?",
+            icon="/public/forecast.png",
+        ),
+    ]
+
+
 # Defines a list of available chat profiles (e.g, different assistant personas)
 @cl.set_chat_profiles
 async def chat_profiles():
+    transparent_pixel = (
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABAABJzQnCgAAAABJRU5ErkJggg=="
+    )
+
     return [
         cl.ChatProfile(
             name="ASGPT 2.0",
-            icon="🧠",
             id="rag",
-            markdown_description="Main assistant profile for ASGPT 2.0 answers",
+            # icon=transparent_pixel,
+            icon="/public/asgpt 2.0.png",
+            markdown_description=(
+                # "![ASGPT Logo](/public/bgg.png)\n\n"
+                "**Bienvenido a ASGPT 2.0**"
+            ),
         ),
         cl.ChatProfile(
             name="ASGPT",
@@ -641,8 +677,20 @@ async def handle_message(message: cl.Message):
         except Exception:
             pass
 
-    full_text = full_text.replace(TERMINATE_TOKEN, "").replace("\\n", "\n")
+    # full_text = full_text.replace(TERMINATE_TOKEN, "").replace("\\n", "\n")
+    # full_text = re.sub(r"(?<=[a-zA-Z])(?=[A-Z])", " ", full_text)
+
+    # 🧼 Clean up special tokens and weird artifacts
+    full_text = (
+        full_text.replace(TERMINATE_TOKEN, "")
+        .replace("QUESTION_ANSWERED", "")
+        .replace("Q U E S T I O N_A N S W E R E D", "")
+        .replace("\\n", "\n")
+    )
+
+    # Fix weird camel-case spacing artifacts
     full_text = re.sub(r"(?<=[a-zA-Z])(?=[A-Z])", " ", full_text)
+    full_text = full_text.strip()
 
     # ⬇️ ONLY run Bing fallback if NOT smalltalk
     if not smalltalk and looks_like_no_answer(full_text):
