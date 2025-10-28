@@ -58,6 +58,50 @@ def build_blob_url(filename: str) -> str:
 # ==================== 🔹 Bing Agent helpers 🔹 ====================
 from openai import AzureOpenAI
 
+# ==================== 🔹 Conversation Summary Helpers 🔹 ====================
+summary_client = AzureOpenAI(
+    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+    api_version="2024-02-15-preview",
+)
+
+
+def is_summary_request(text: str) -> bool:
+    keywords = [
+        "resume nuestra conversación",
+        "resumen de la conversación",
+        "que te pregunté",
+        "de que temas hablamos",
+        "de qué temas hablamos",
+        "de qué hablamos",
+        "qué te pregunté",
+        "summarize",
+        "what did i ask",
+        "summary of our chat",
+    ]
+    return any(k in text.lower() for k in keywords)
+
+
+async def summarize_conversation(conversation_text: str) -> str:
+    completion = summary_client.chat.completions.create(
+        model=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME"),
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a helpful summarizer. Summarize the conversation in a few sentences "
+                    "mentioning the main topics discussed. Respond in the same language the user used."
+                ),
+            },
+            {"role": "user", "content": conversation_text},
+        ],
+        temperature=0.3,
+        max_tokens=200,
+    )
+    return completion.choices[0].message.content.strip()
+
+
+# ==================== 🔹 Bing Values 🔹 ====================
 # Bing Agent client
 bing_client = AzureOpenAI(
     api_key=os.getenv("AZURE_OPENAI_API_KEY"),  # same key or a separate one
@@ -71,20 +115,21 @@ BING_AGENT_DEPLOYMENT = os.getenv(
     "AZURE_OPENAI_DEPLOYMENT_NAME"
 )  # e.g. "my-bing-agent"
 # ==================== 🔹 Bing REST fallback helpers 🔹 ====================
-BING_SUBSCRIPTION_KEY = os.getenv("BING_SEARCH_KEY")
-BING_ENDPOINT = "https://api.bing.microsoft.com/v7.0/search"
+# # hitting Microsoft’s standalone Bing Search API (a REST endpoint you can use for raw search results).
+# BING_SUBSCRIPTION_KEY = os.getenv("BING_SEARCH_KEY")
+# BING_ENDPOINT = "https://api.bing.microsoft.com/v7.0/search"
 
 
-def bing_rest_search(query: str, count: int = 5):
-    headers = {"Ocp-Apim-Subscription-Key": BING_SUBSCRIPTION_KEY}
-    params = {"q": query, "mkt": "es-ES", "count": count, "textDecorations": True}
-    r = requests.get(BING_ENDPOINT, headers=headers, params=params, timeout=15)
-    r.raise_for_status()
-    items = r.json().get("webPages", {}).get("value", [])
-    return [
-        {"title": i["name"], "url": i["url"], "snippet": i.get("snippet", "")}
-        for i in items
-    ]
+# def bing_rest_search(query: str, count: int = 5):
+#     headers = {"Ocp-Apim-Subscription-Key": BING_SUBSCRIPTION_KEY}
+#     params = {"q": query, "mkt": "es-ES", "count": count, "textDecorations": True}
+#     r = requests.get(BING_ENDPOINT, headers=headers, params=params, timeout=15)
+#     r.raise_for_status()
+#     items = r.json().get("webPages", {}).get("value", [])
+#     return [
+#         {"title": i["name"], "url": i["url"], "snippet": i.get("snippet", "")}
+#         for i in items
+#     ]
 
 
 # ==================== 🔹 End Bing helpers 🔹 ====================
@@ -147,6 +192,51 @@ async def ask_bing(markdown_instructions: str, user_query: str) -> str:
         temperature=0.2,
     )
     return completion.choices[0].message.content or "No response."
+
+
+# async def ask_bing(markdown_instructions: str, user_query: str) -> str:
+#     """
+#     Call Azure AI Foundry Agent endpoint directly for real-time Bing-grounded search.
+#     Includes safety checks for missing or malformed endpoint URLs.
+#     """
+#     try:
+#         agent_id = os.getenv("AZURE_OPENAI_WS_AGENT_ID")
+#         endpoint = os.getenv("AZURE_OPENAI_WS_ENDPOINT", "").strip()
+#         api_key = os.getenv("AZURE_OPENAI_API_KEY")
+
+#         # ✅ Safety: ensure endpoint starts with https://
+#         if not endpoint:
+#             raise ValueError(
+#                 "AZURE_OPENAI_WS_ENDPOINT environment variable is not set."
+#             )
+#         if not endpoint.startswith("http"):
+#             endpoint = f"https://{endpoint.lstrip('/')}"
+
+#         endpoint = endpoint.rstrip("/")
+#         url = f"{endpoint}/openai/agents/{agent_id}/chat/completions?api-version=2024-10-01-preview"
+
+#         # 🪵 Log for debugging
+#         logging.info(f"[ask_bing] Using endpoint: {endpoint}")
+#         logging.info(f"[ask_bing] Final URL: {url}")
+
+#         headers = {"Content-Type": "application/json", "api-key": api_key}
+#         payload = {
+#             "input": f"{markdown_instructions}\n\n{user_query}",
+#             "stream": False,
+#         }
+
+#         response = requests.post(url, headers=headers, json=payload, timeout=30)
+#         response.raise_for_status()
+#         data = response.json()
+
+#         if data.get("output"):
+#             return data["output"][0]["content"][0]["text"]
+#         else:
+#             return "⚠️ No response from Bing Agent."
+
+#     except Exception as e:
+#         logging.exception("❌ Bing Agent call failed")
+#         return f"⚠️ Error en la búsqueda web: {e}"
 
 
 # def _iso_now() -> str:
@@ -462,7 +552,6 @@ async def on_chat_start():
 
 
 # ==================== 🔹 Chainlit Resume & History Handlers 🔹 ====================
-import chainlit as cl
 
 
 # @cl.on_chat_resume
@@ -510,6 +599,30 @@ def is_bing_question(text: str) -> bool:
             "current president",
             "what's happening",
             "world news",
+            "últimas noticias",
+            "buscar en la web",
+            "pronóstico del tiempo",
+            "noticias actuales",
+            "el clima",
+            "internet",
+            "búsqueda web",
+            "red",
+            "navegador",
+            "weather",
+            "tiempo",
+            "search engine",
+            "motor de búsqueda",
+            "google",
+            "wikipedia",
+            "tell me about",
+            "dime sobre",
+            "look up",
+            "búscame",
+            "find me",
+            "encuéntrame",
+            "research",
+            "investiga",
+            "busca en la red",
         ]
     )
 
@@ -548,6 +661,21 @@ async def handle_message(message: cl.Message):
         }
     )
 
+    # 🧩 Check if the user asked for a conversation summary
+    if is_summary_request(message.content):
+        steps = await data_layer.list_steps(thread_id)
+        if not steps:
+            await cl.Message(
+                content="No hay mensajes previos en esta conversación."
+            ).send()
+            return
+        conversation_text = "\n".join(
+            f"{s['role']}: {s.get('output') or s.get('input', '')}" for s in steps
+        )
+        summary = await summarize_conversation(conversation_text)
+        await cl.Message(content=summary).send()
+        return
+
     response_msg = cl.Message(content="")
     await response_msg.send()
 
@@ -569,6 +697,49 @@ async def handle_message(message: cl.Message):
 
     smalltalk = is_smalltalk(message.content)
 
+    # if smalltalk:
+    #     sim = 1.0
+    #     route_to_web = False
+    # else:
+    #     sim = await quick_similarity_score(data_layer, message.content)
+    #     route_to_web = sim < MIN_SIM_SCORE
+
+    # if route_to_web:
+    #     # 🌐 Go straight to web search (Bing-grounded Azure OpenAI)
+    #     try:
+    #         web_answer = await ask_bing(
+    #             markdown_instructions="Responde en el idioma del usuario. Incluye 'Fuentes' con enlaces Markdown.",
+    #             user_query=message.content,
+    #         )
+    #         await response_msg.stream_token(web_answer)
+    #         response_msg.content = web_answer
+    #         await response_msg.update()
+    #     except Exception as e:
+    #         await response_msg.stream_token(f"⚠️ Bing Agent error: {e}")
+    #     return
+
+    # # 👉 Bing Agent path
+    # if is_bing_question(message.content):
+    #     response_msg = cl.Message(content="")
+    #     await response_msg.send()
+    #     try:
+    #         completion = await bing_client.chat.completions.create(
+    #             model=BING_AGENT_DEPLOYMENT,
+    #             messages=[
+    #                 {
+    #                     "role": "system",
+    #                     "content": "You are a helpful Bing search agent.",
+    #                 },
+    #                 {"role": "user", "content": message.content},
+    #             ],
+    #         )
+    #         answer = completion.choices[0].message.content
+    #         await response_msg.stream_token(answer)
+    #         response_msg.content = answer
+    #         await response_msg.update()
+    #     except Exception as e:
+    #         await response_msg.stream_token(f"⚠️ Bing Agent error: {e}")
+    #     return
     if smalltalk:
         sim = 1.0
         route_to_web = False
@@ -576,11 +747,11 @@ async def handle_message(message: cl.Message):
         sim = await quick_similarity_score(data_layer, message.content)
         route_to_web = sim < MIN_SIM_SCORE
 
-    if route_to_web:
-        # 🌐 Go straight to web search (Bing-grounded Azure OpenAI)
+    # 🧭 Always handle explicit "live" or time-sensitive questions first
+    if is_bing_question(message.content):
         try:
             web_answer = await ask_bing(
-                markdown_instructions="Responde en el idioma del usuario. Incluye 'Fuentes' con enlaces Markdown.",
+                markdown_instructions="Responde con información actualizada del web, incluyendo fuentes.",
                 user_query=message.content,
             )
             await response_msg.stream_token(web_answer)
@@ -588,26 +759,17 @@ async def handle_message(message: cl.Message):
             await response_msg.update()
         except Exception as e:
             await response_msg.stream_token(f"⚠️ Bing Agent error: {e}")
-        return
+        return  # ✅ stop here; don't go to orchestrator
 
-    # 👉 Bing Agent path
-    if is_bing_question(message.content):
-        response_msg = cl.Message(content="")
-        await response_msg.send()
+    # 🌍 Fallback: route to web if similarity score is low
+    if route_to_web:
         try:
-            completion = await bing_client.chat.completions.create(
-                model=BING_AGENT_DEPLOYMENT,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a helpful Bing search agent.",
-                    },
-                    {"role": "user", "content": message.content},
-                ],
+            web_answer = await ask_bing(
+                markdown_instructions="Responde en el idioma del usuario. Incluye 'Fuentes' con enlaces Markdown.",
+                user_query=message.content,
             )
-            answer = completion.choices[0].message.content
-            await response_msg.stream_token(answer)
-            response_msg.content = answer
+            await response_msg.stream_token(web_answer)
+            response_msg.content = web_answer
             await response_msg.update()
         except Exception as e:
             await response_msg.stream_token(f"⚠️ Bing Agent error: {e}")
