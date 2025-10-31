@@ -68,15 +68,43 @@ summary_client = AzureOpenAI(
 
 def is_summary_request(text: str) -> bool:
     keywords = [
-        "resume nuestra conversación",
+        "que temas hablamos",
+        "qué temas hablamos",
+        "qué hablamos",
+        "que hablamos",
+        "que temas discutimos",
+        "repasa nuestra conversación",
+        "repasa nuestra conversacion",
+        "repasa la conversación",
+        "repasa la conversacion",
+        "repasa nuestra conversación",
+        "repasa lo discutido",
+        "resume nuestra conversacion",
+        "resume la conversacion",
+        "resumen de esta conversación",
+        "resumen de esta conversacion",
+        "resumen de la conversación",
+        "resumen de la conversacion",
+        "resumir esta conversación",
+        "resumir esta conversacion",
+        "resumir la conversación",
+        "resumir nuestra conversación",
+        "resumen de nuestra conversación",
         "resumen de la conversación",
         "que te pregunté",
-        "de que temas hablamos",
+        "que te acabo de preguntar" "de que temas hablamos",
         "de qué temas hablamos",
-        "de qué hablamos",
+        "de qué hablamos" "de que hablamos",
+        "resumir",
         "qué te pregunté",
         "summarize",
+        "summarize our conversation",
+        "summary of this conversation",
+        "summarize this conversation",
+        "summary of the conversation",
+        "summarize the conversation",
         "what did i ask",
+        "what topics did we discuss",
         "summary of our chat",
     ]
     return any(k in text.lower() for k in keywords)
@@ -192,69 +220,6 @@ async def ask_bing(markdown_instructions: str, user_query: str) -> str:
         temperature=0.2,
     )
     return completion.choices[0].message.content or "No response."
-
-
-# async def ask_bing(markdown_instructions: str, user_query: str) -> str:
-#     """
-#     Call Azure AI Foundry Agent endpoint directly for real-time Bing-grounded search.
-#     Includes safety checks for missing or malformed endpoint URLs.
-#     """
-#     try:
-#         agent_id = os.getenv("AZURE_OPENAI_WS_AGENT_ID")
-#         endpoint = os.getenv("AZURE_OPENAI_WS_ENDPOINT", "").strip()
-#         api_key = os.getenv("AZURE_OPENAI_API_KEY")
-
-#         # ✅ Safety: ensure endpoint starts with https://
-#         if not endpoint:
-#             raise ValueError(
-#                 "AZURE_OPENAI_WS_ENDPOINT environment variable is not set."
-#             )
-#         if not endpoint.startswith("http"):
-#             endpoint = f"https://{endpoint.lstrip('/')}"
-
-#         endpoint = endpoint.rstrip("/")
-#         url = f"{endpoint}/openai/agents/{agent_id}/chat/completions?api-version=2024-10-01-preview"
-
-#         # 🪵 Log for debugging
-#         logging.info(f"[ask_bing] Using endpoint: {endpoint}")
-#         logging.info(f"[ask_bing] Final URL: {url}")
-
-#         headers = {"Content-Type": "application/json", "api-key": api_key}
-#         payload = {
-#             "input": f"{markdown_instructions}\n\n{user_query}",
-#             "stream": False,
-#         }
-
-#         response = requests.post(url, headers=headers, json=payload, timeout=30)
-#         response.raise_for_status()
-#         data = response.json()
-
-#         if data.get("output"):
-#             return data["output"][0]["content"][0]["text"]
-#         else:
-#             return "⚠️ No response from Bing Agent."
-
-#     except Exception as e:
-#         logging.exception("❌ Bing Agent call failed")
-#         return f"⚠️ Error en la búsqueda web: {e}"
-
-
-# def _iso_now() -> str:
-#     return datetime.now(timezone.utc).isoformat()
-
-
-# print("ORCHESTRATOR_STREAM_ENDPOINT =", os.getenv("ORCHESTRATOR_STREAM_ENDPOINT"))
-
-
-# @cl.data_layer
-# def get_data_layer():
-#     return CosmosDataLayer(
-#         endpoint=os.getenv("COSMOS_DB_URI") or cl.config.cosmosdb.uri,
-#         key=os.getenv("COSMOS_DB_KEY") or cl.config.cosmosdb.key,
-#         database_name=os.getenv("AZURE_DB_ID", "db0-wvvannyqg5e74"),
-#         container_threads=os.getenv("AZURE_CONTAINER_NAME", "conversations"),
-#         container_users=os.getenv("AZURE_USER_CONTAINER", "users"),
-#     )
 
 
 # Postgres data layer
@@ -484,8 +449,12 @@ async def login(username: str, password: str):
     return None
 
 
+from context_manager import ConversationContext
+
+
 @cl.on_chat_start
 async def on_chat_start():
+    cl.user_session.set("context", ConversationContext())
     user = cl.user_session.get("user")
     if user and not getattr(user, "metadata", None):
         # Reconstruct and restore metadata if missing
@@ -506,66 +475,19 @@ async def on_chat_start():
     print("🧾 user.metadata:", getattr(user, "metadata", {}))
 
 
-# @cl.on_chat_start
-# async def demo_pdf():
-#     import httpx
-
-#     storage = os.getenv("BLOB_ACCOUNT_NAME", "asgprjedi1")
-#     container = os.getenv("BLOB_CONTAINER_NAME", "chainlit-attachments-pdf")
-#     sas_token = os.getenv("BLOB_CONTAINER_SAS", "")
-
-#     pdf_url = (
-#         f"https://{storage}.blob.core.windows.net/{container}/1431815.pdf?{sas_token}"
-#     )
-
-#     async with httpx.AsyncClient(timeout=30) as client:
-#         r = await client.get(pdf_url)
-#         r.raise_for_status()
-#         pdf_bytes = r.content  # esto sí es el PDF
-
-#     await cl.Message(
-#         content="",
-#         elements=[
-#             cl.Pdf(name="Inline test", display="inline", content=pdf_bytes, page=1),
-#             # cl.Pdf(name="Sidebar test", display="side", content=pdf_bytes, page=1),
-#         ],
-#     ).send()
-
-
-# async def demo_pdf():
-#     storage = os.getenv("BLOB_ACCOUNT_NAME", "asgprjedi1")
-#     container = os.getenv("BLOB_CONTAINER_NAME", "chainlit-attachments-pdf")
-#     sas_token = os.getenv("BLOB_CONTAINER_SAS", "")
-
-#     pdf_url = (
-#         f"https://{storage}.blob.core.windows.net/{container}/1431815.pdf?{sas_token}"
-#     )
-
-#     await cl.Message(
-#         content="Test of PDF in both inline and side:",
-#         elements=[
-#             cl.Pdf(name="Inline test", display="inline", url=pdf_url, page=1),
-#             cl.Pdf(name="Sidebar test", display="side", url=pdf_url, page=1),
-#         ],
-
-#     ).send()
-
-
 # ==================== 🔹 Chainlit Resume & History Handlers 🔹 ====================
 
 
-# @cl.on_chat_resume
-# async def on_chat_resume(thread_id: str):
-#     cl.user_session.set("thread_id", thread_id)
-#     print(f"🟢 on_chat_resume called with thread_id={thread_id}")
 @cl.on_chat_resume
-async def on_chat_resume(thread):  # ⛔ no `cl.Thread` type here
+async def on_chat_resume(thread):
     print(f"🔁 Resuming thread: {thread.id}")
     cl.user_session.set("thread", thread)
 
-    messages = await cl.get_messages(thread.id)
-    for msg in messages:
-        print(f"{msg.author}: {msg.content}")
+    # Optionally restore context memory for continuity
+    ctx = cl.user_session.get("context")
+    if ctx is None:
+        ctx = ConversationContext()
+        cl.user_session.set("context", ctx)
 
 
 # @cl.on_chat_load_history
@@ -639,6 +561,20 @@ async def handle_message(message: cl.Message):
 
     print(f"📨 Handling message for thread: {thread_id}")
 
+    # 🧠 Update conversation context
+    ctx = cl.user_session.get("context")
+    if ctx is None:
+        ctx = ConversationContext()
+        cl.user_session.set("context", ctx)
+
+    ctx.update(message.content)
+    context_summary = ctx.summarize()
+
+    if ctx.last_topic_type == "case":
+        print(f"🧠 Active cases for {thread_id}: {ctx.active_cases}")
+    elif ctx.last_topic_type == "entity":
+        print(f"🧠 Active entities for {thread_id}: {ctx.active_entities}")
+
     if not thread_id:
 
         thread_id = await data_layer.create_thread(user.identifier)
@@ -696,50 +632,6 @@ async def handle_message(message: cl.Message):
         )
 
     smalltalk = is_smalltalk(message.content)
-
-    # if smalltalk:
-    #     sim = 1.0
-    #     route_to_web = False
-    # else:
-    #     sim = await quick_similarity_score(data_layer, message.content)
-    #     route_to_web = sim < MIN_SIM_SCORE
-
-    # if route_to_web:
-    #     # 🌐 Go straight to web search (Bing-grounded Azure OpenAI)
-    #     try:
-    #         web_answer = await ask_bing(
-    #             markdown_instructions="Responde en el idioma del usuario. Incluye 'Fuentes' con enlaces Markdown.",
-    #             user_query=message.content,
-    #         )
-    #         await response_msg.stream_token(web_answer)
-    #         response_msg.content = web_answer
-    #         await response_msg.update()
-    #     except Exception as e:
-    #         await response_msg.stream_token(f"⚠️ Bing Agent error: {e}")
-    #     return
-
-    # # 👉 Bing Agent path
-    # if is_bing_question(message.content):
-    #     response_msg = cl.Message(content="")
-    #     await response_msg.send()
-    #     try:
-    #         completion = await bing_client.chat.completions.create(
-    #             model=BING_AGENT_DEPLOYMENT,
-    #             messages=[
-    #                 {
-    #                     "role": "system",
-    #                     "content": "You are a helpful Bing search agent.",
-    #                 },
-    #                 {"role": "user", "content": message.content},
-    #             ],
-    #         )
-    #         answer = completion.choices[0].message.content
-    #         await response_msg.stream_token(answer)
-    #         response_msg.content = answer
-    #         await response_msg.update()
-    #     except Exception as e:
-    #         await response_msg.stream_token(f"⚠️ Bing Agent error: {e}")
-    #     return
     if smalltalk:
         sim = 1.0
         route_to_web = False
@@ -779,7 +671,15 @@ async def handle_message(message: cl.Message):
     full_text = ""
     references = set()
     auth_info = check_authorization()
-    generator = call_orchestrator_stream(thread_id, message.content, auth_info)
+    # generator = call_orchestrator_stream(thread_id, message.content, auth_info)
+    # Include case context as metadata for orchestrator
+    context_prompt = (
+        f"{context_summary}\n"
+        f"User message: {message.content}\n"
+        f"Continue answering based on the current context above."
+    )
+    logging.info(f"[Context Summary]: {context_summary or 'No active context'}")
+    generator = call_orchestrator_stream(thread_id, context_prompt, auth_info)
 
     try:
         async for chunk in generator:
